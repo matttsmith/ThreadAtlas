@@ -578,6 +578,123 @@ def cmd_untag(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Canonicalization: merge / rename / suppress derived objects.
+# ---------------------------------------------------------------------------
+
+def cmd_obj_merge(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        report = store.merge_derived_objects(args.winner, args.losers)
+        store.conn.commit()
+        print(json.dumps(report, indent=2))
+    except (KeyError, ValueError) as e:
+        print(f"merge failed: {e}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_obj_rename(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        obj = store.get_derived_object(args.object_id)
+        if obj is None:
+            print(f"Unknown object: {args.object_id}", file=sys.stderr)
+            return 1
+        store.rename_derived_object(args.object_id, args.title)
+        store.conn.commit()
+        print(f"{args.object_id} renamed: {obj.title!r} -> {args.title!r}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_obj_suppress(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        obj = store.get_derived_object(args.object_id)
+        if obj is None:
+            print(f"Unknown object: {args.object_id}", file=sys.stderr)
+            return 1
+        if args.unsuppress:
+            store.unsuppress_derived_object(args.object_id)
+            action = "unsuppressed"
+        else:
+            store.suppress_derived_object(args.object_id)
+            action = "suppressed"
+        store.conn.commit()
+        print(f"{args.object_id} ({obj.kind}) {action}")
+    finally:
+        store.close()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Manual project linking.
+# ---------------------------------------------------------------------------
+
+def cmd_link(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        proj = store.get_derived_object(args.project_id)
+        if proj is None or proj.kind != "project":
+            print(f"Not a project object: {args.project_id}", file=sys.stderr)
+            return 1
+        c = store.get_conversation(args.conversation_id)
+        if c is None:
+            print(f"Unknown conversation: {args.conversation_id}", file=sys.stderr)
+            return 1
+        store.update_conversation_meta(
+            args.conversation_id, primary_project_id=args.project_id,
+        )
+        store.conn.commit()
+        print(f"{args.conversation_id} -> primary_project_id={args.project_id} "
+              f"({proj.title!r})")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_unlink(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        c = store.get_conversation(args.conversation_id)
+        if c is None:
+            print(f"Unknown conversation: {args.conversation_id}", file=sys.stderr)
+            return 1
+        # Clearing primary_project_id: there is no "None" sentinel in the
+        # update helper, so we run a direct UPDATE here.
+        store.conn.execute(
+            "UPDATE conversations SET primary_project_id = NULL WHERE conversation_id = ?",
+            (args.conversation_id,),
+        )
+        store.conn.commit()
+        print(f"{args.conversation_id} primary_project_id cleared "
+              f"(was {c.primary_project_id!r})")
+    finally:
+        store.close()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# TUI.
+# ---------------------------------------------------------------------------
+
+def cmd_tui(args) -> int:
+    from .. import tui as tui_pkg
+    if args.preview:
+        print(tui_pkg.preview_screen(args.vault, args.preview))
+        return 0
+    return tui_pkg.run_tui(args.vault)
+
+
 def cmd_llm_chunk(args) -> int:
     vault = open_vault(args.vault)
     store = open_store(vault)

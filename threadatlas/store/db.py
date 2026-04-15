@@ -353,6 +353,79 @@ class Store:
         )
         return cur.rowcount or 0
 
+    def rename_derived_object(self, object_id: str, new_title: str) -> None:
+        self.conn.execute(
+            "UPDATE derived_objects SET title = ?, updated_at = strftime('%s','now') "
+            "WHERE object_id = ?",
+            (new_title, object_id),
+        )
+
+    def suppress_derived_object(self, object_id: str) -> None:
+        """Mark a derived object suppressed - it vanishes from listings but
+        its provenance links remain for audit."""
+        self.conn.execute(
+            "UPDATE derived_objects SET state = 'suppressed', updated_at = strftime('%s','now') "
+            "WHERE object_id = ?",
+            (object_id,),
+        )
+
+    def unsuppress_derived_object(self, object_id: str) -> None:
+        self.conn.execute(
+            "UPDATE derived_objects SET state = 'active', updated_at = strftime('%s','now') "
+            "WHERE object_id = ?",
+            (object_id,),
+        )
+
+    def merge_derived_objects(self, winner_id: str, losers: list[str]) -> dict:
+        """Merge one or more losers into ``winner_id``.
+
+        * Every provenance link pointing at a loser is repointed at the winner
+          (insert-or-ignore to avoid PK duplicates).
+        * Losers are then deleted.
+        * Winner's ``updated_at`` is bumped.
+
+        Returns counts.
+        """
+        winner = self.conn.execute(
+            "SELECT * FROM derived_objects WHERE object_id = ?", (winner_id,)
+        ).fetchone()
+        if winner is None:
+            raise KeyError(f"unknown winner: {winner_id}")
+        kind = winner["kind"]
+        # Confirm losers exist and match the winner's kind. Cross-kind merges
+        # are refused because they would corrupt typed listings.
+        moved_links = 0
+        removed = 0
+        for loser_id in losers:
+            if loser_id == winner_id:
+                continue
+            lrow = self.conn.execute(
+                "SELECT kind FROM derived_objects WHERE object_id = ?", (loser_id,)
+            ).fetchone()
+            if lrow is None:
+                continue
+            if lrow["kind"] != kind:
+                raise ValueError(
+                    f"cannot merge {loser_id} (kind={lrow['kind']}) into "
+                    f"{winner_id} (kind={kind})"
+                )
+            # Repoint provenance links, ignoring duplicates that would collide
+            # on (object_id, conversation_id, chunk_id) soft-uniqueness.
+            cur = self.conn.execute(
+                "UPDATE provenance_links SET object_id = ? WHERE object_id = ?",
+                (winner_id, loser_id),
+            )
+            moved_links += cur.rowcount or 0
+            self.conn.execute(
+                "DELETE FROM derived_objects WHERE object_id = ?", (loser_id,)
+            )
+            removed += 1
+        self.conn.execute(
+            "UPDATE derived_objects SET updated_at = strftime('%s','now') WHERE object_id = ?",
+            (winner_id,),
+        )
+        return {"provenance_links_moved": moved_links, "losers_removed": removed}
+
     # --- provenance ---------------------------------------------------------
 
     def insert_provenance(self, link: ProvenanceLink) -> None:

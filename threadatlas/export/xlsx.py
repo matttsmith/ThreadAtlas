@@ -56,6 +56,12 @@ PROFILES: dict[str, _Profile] = {
         sheets=("conversations", "chunks", "projects", "decisions", "open_loops", "entities", "preferences", "artifacts", "groups", "provenance"),
         include_states=(State.PENDING_REVIEW.value, State.INDEXED.value, State.PRIVATE.value, State.QUARANTINED.value),
     ),
+    "summaries_review": _Profile(
+        name="summaries_review",
+        description="Operator review of LLM-generated summaries vs deterministic fallback.",
+        sheets=("summaries_review",),
+        include_states=(State.INDEXED.value, State.PRIVATE.value),
+    ),
 }
 
 
@@ -308,6 +314,54 @@ def _build_groups(ws, store: Store, states: tuple[str, ...]) -> None:
         ])
 
 
+def _build_summaries_review(ws, store: Store, states: tuple[str, ...]) -> None:
+    """One row per conversation, shaped for human review of LLM summaries.
+
+    Columns include the conversation's first user message (a cheap sanity
+    anchor for the summary) and an empty ``operator_decision`` column that
+    the human fills in ("ok" / "redo" / "reject").
+    """
+    cols = [
+        "conversation_id", "state", "source", "title",
+        "summary_source", "summary_short",
+        "first_user_message",
+        "message_count", "chunk_count",
+        "operator_decision",  # empty; human fills this in
+        "operator_note",      # empty; free text
+    ]
+    _write_header(ws, cols)
+    state_clause, params = _state_filter_clause(states)
+    rows = store.conn.execute(
+        f"""
+        SELECT c.conversation_id, c.state, c.source, c.title,
+               c.summary_source, c.summary_short,
+               c.message_count,
+               (SELECT COUNT(*) FROM chunks ch WHERE ch.conversation_id = c.conversation_id) AS chunk_count,
+               (SELECT content_text FROM messages m
+                  WHERE m.conversation_id = c.conversation_id AND m.role = 'user'
+                  ORDER BY m.ordinal ASC LIMIT 1) AS first_user_message
+          FROM conversations c
+         WHERE c.{state_clause}
+         ORDER BY c.summary_source DESC, COALESCE(c.updated_at, c.imported_at) DESC
+        """,
+        params,
+    ).fetchall()
+    for r in rows:
+        first_user = (r["first_user_message"] or "").replace("\n", " ")
+        if len(first_user) > 500:
+            first_user = first_user[:497] + "..."
+        ws.append([
+            r["conversation_id"], r["state"], r["source"], r["title"] or "",
+            r["summary_source"] or "deterministic",
+            (r["summary_short"] or "")[:800],
+            first_user,
+            r["message_count"] or 0,
+            r["chunk_count"] or 0,
+            "",  # operator_decision
+            "",  # operator_note
+        ])
+
+
 _SHEET_BUILDERS = {
     "conversations": _build_conversations,
     "chunks": _build_chunks,
@@ -319,4 +373,5 @@ _SHEET_BUILDERS = {
     "artifacts": _build_artifacts,
     "groups": _build_groups,
     "provenance": _build_provenance,
+    "summaries_review": _build_summaries_review,
 }

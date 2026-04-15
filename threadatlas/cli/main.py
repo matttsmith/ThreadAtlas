@@ -218,6 +218,50 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("tags", nargs="+")
     s.set_defaults(handler=cmd.cmd_untag)
 
+    # --- canonicalization ---
+    s = sub.add_parser("obj-merge",
+                       help="Merge one or more derived objects into a winner (same kind only)")
+    s.add_argument("vault", type=Path)
+    s.add_argument("winner")
+    s.add_argument("losers", nargs="+")
+    s.set_defaults(handler=cmd.cmd_obj_merge)
+
+    s = sub.add_parser("obj-rename", help="Rename a derived object")
+    s.add_argument("vault", type=Path)
+    s.add_argument("object_id")
+    s.add_argument("title")
+    s.set_defaults(handler=cmd.cmd_obj_rename)
+
+    s = sub.add_parser("obj-suppress",
+                       help="Mark a derived object suppressed (hidden from listings)")
+    s.add_argument("vault", type=Path)
+    s.add_argument("object_id")
+    s.add_argument("--unsuppress", action="store_true",
+                   help="Revert a previous suppression")
+    s.set_defaults(handler=cmd.cmd_obj_suppress)
+
+    # --- manual project linking ---
+    s = sub.add_parser("link", help="Set a conversation's primary_project_id")
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_id")
+    s.add_argument("project_id")
+    s.set_defaults(handler=cmd.cmd_link)
+
+    s = sub.add_parser("unlink", help="Clear a conversation's primary_project_id")
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_id")
+    s.set_defaults(handler=cmd.cmd_unlink)
+
+    # --- TUI ---
+    s = sub.add_parser("tui", help="Interactive ASCII dashboard (read-only curses UI)")
+    s.add_argument("vault", type=Path)
+    s.add_argument("--preview", default=None,
+                   metavar="SCREEN",
+                   choices=["overview", "conversations", "groups", "projects",
+                            "open_loops", "decisions", "entities", "help"],
+                   help="Print a single screen to stdout (no curses) and exit")
+    s.set_defaults(handler=cmd.cmd_tui)
+
     return p
 
 
