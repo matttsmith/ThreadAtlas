@@ -36,6 +36,7 @@ from ..search import (
 )
 from ..search.search import list_projects
 from ..store import open_store, Store
+from . import writes as writes_mod
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -289,6 +290,48 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_inspect_conversation_storage),
     ]
+
+    # Opt-in write tools. Only registered when <vault>/mcp_config.json sets
+    # allow_writes=true. Every successful call is audit-logged in
+    # <vault>/logs/mcp_mutations.jsonl with metadata only (no content).
+    if writes_mod.writes_enabled(vault):
+        def _wrap(fn):
+            def _handler(args):
+                ok, payload = fn(vault, store, args)
+                if ok:
+                    return _ok(payload)
+                return _err(str(payload.get("error", "write failed")))
+            return _handler
+
+        tools.extend([
+            _Tool("set_group_label", "Update a thematic group's llm_label (e.g. correct a misnamed cluster).",
+                  {"type": "object",
+                   "properties": {"group_id": {"type": "string"},
+                                  "label": {"type": "string"}},
+                   "required": ["group_id", "label"]},
+                  _wrap(writes_mod.set_group_label)),
+            _Tool("add_tag", "Add one or more manual tags to an INDEXED conversation.",
+                  {"type": "object",
+                   "properties": {"conversation_id": {"type": "string"},
+                                  "tags": {"type": "array",
+                                           "items": {"type": "string"}}},
+                   "required": ["conversation_id", "tags"]},
+                  _wrap(writes_mod.add_tag)),
+            _Tool("remove_tag", "Remove one or more manual tags from an INDEXED conversation.",
+                  {"type": "object",
+                   "properties": {"conversation_id": {"type": "string"},
+                                  "tags": {"type": "array",
+                                           "items": {"type": "string"}}},
+                   "required": ["conversation_id", "tags"]},
+                  _wrap(writes_mod.remove_tag)),
+            _Tool("rename_derived_object", "Rename a project/entity/decision/etc. (title only; object id and kind unchanged).",
+                  {"type": "object",
+                   "properties": {"object_id": {"type": "string"},
+                                  "title": {"type": "string"}},
+                   "required": ["object_id", "title"]},
+                  _wrap(writes_mod.rename_derived_object)),
+        ])
+
     return {t.name: t for t in tools}
 
 

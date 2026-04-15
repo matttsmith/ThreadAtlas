@@ -123,7 +123,7 @@ Try a sanity-check question:
 Claude will call `search_conversations` / `get_conversation_summary` and
 respond with results drawn from your vault.
 
-The tools Claude can call are read-only and indexed-only:
+The tools Claude can call are, by default, **read-only and indexed-only**:
 
 - `search_conversations`, `search_chunks`
 - `get_conversation_summary`, `get_conversation_messages`, `get_conversation_chunks`
@@ -133,9 +133,38 @@ The tools Claude can call are read-only and indexed-only:
 - `inspect_conversation_storage` (metadata only; redacts title for
   non-visible conversations)
 
-There are **no mutating tools** — Claude cannot approve, delete,
-quarantine, tag, or otherwise alter your corpus. Mutations stay in the
-`threadatlas` CLI with confirmation prompts.
+Claude **cannot** change visibility state, delete conversations,
+merge/suppress derived objects, or alter message content. Those remain
+CLI-only, with confirmation prompts.
+
+### Optional: narrow write tools
+
+If you want Claude to be able to correct obviously-wrong labels and
+tags, drop a `<vault>/mcp_config.json`:
+
+```json
+{"allow_writes": true}
+```
+
+Restart Claude Desktop. Four additional tools become available:
+
+- `set_group_label` — correct a cluster's prose label.
+- `add_tag` / `remove_tag` — manual tags on `indexed` conversations.
+- `rename_derived_object` — fix an auto-extracted project/entity name.
+
+Guarantees:
+- **State changes are never exposed.** Claude still cannot move a
+  conversation between `pending_review` / `indexed` / `private` /
+  `quarantined` / `deleted`.
+- `rename_derived_object` refuses to rename an object whose provenance
+  is entirely in non-indexed conversations (can't be used to surface or
+  edit private-only material).
+- Every successful write is logged to
+  `<vault>/logs/mcp_mutations.jsonl` with timestamp + tool + args +
+  outcome. **No message content is logged.** You can audit what Claude
+  did.
+- String inputs are length-capped before hitting the DB; prompt
+  injection trying to stuff huge payloads into labels is truncated.
 
 ---
 

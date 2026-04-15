@@ -81,6 +81,10 @@ threadatlas init ./vault
 threadatlas import ./vault ~/Downloads/chatgpt-export.zip --source chatgpt
 threadatlas import ./vault ~/Downloads/claude-export.zip  --source claude
 
+# Optional: skip the pending_review step for non-sensitive threads.
+# auto_rules.json (see below) still routes matching threads to private.
+threadatlas import ./vault ./export --auto-approve
+
 # 3. Review what landed in pending_review.
 threadatlas review ./vault
 threadatlas tui ./vault                    # interactive ASCII dashboard
@@ -114,6 +118,34 @@ threadatlas rebuild-from-normalized ./vault
 ```
 
 Full CLI reference: `threadatlas --help` and `threadatlas <cmd> --help`.
+
+### Auto-classification rules
+
+The pending-review step is friction. For operators who will approve most
+threads anyway, you can layer a keyword-/regex-based safety net that
+auto-routes sensitive threads straight to `private` (or `quarantined`)
+on import. Drop a `<vault>/auto_rules.json`:
+
+```json
+{
+  "auto_private": [
+    {"patterns": ["therapy", "therapist", "anxiety medication"],
+     "fields": ["title", "messages"]},
+    {"patterns": ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+     "mode": "regex", "fields": ["messages"]}
+  ],
+  "auto_quarantine": [
+    {"patterns": ["[no-index]", "[secret]"], "fields": ["title"]}
+  ]
+}
+```
+
+- Rules **only down-classify.** A rule cannot make something more
+  visible. A matching rule always wins over `--auto-approve`.
+- `threadatlas rescan-rules ./vault` re-applies the current rules to the
+  existing corpus (also down-classify-only).
+- The matching pattern is recorded in each conversation's
+  `notes_local` so you can see why it landed where it did.
 
 ### Wiring to Claude Desktop / other MCP hosts
 

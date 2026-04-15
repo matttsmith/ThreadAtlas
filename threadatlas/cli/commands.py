@@ -72,7 +72,10 @@ def cmd_import(args) -> int:
     store = open_store(vault)
     try:
         result = import_path(
-            vault, store, args.path, source=args.source, copy_raw=not args.no_copy
+            vault, store, args.path,
+            source=args.source,
+            copy_raw=not args.no_copy,
+            auto_approve=args.auto_approve,
         )
     finally:
         store.close()
@@ -83,6 +86,14 @@ def cmd_import(args) -> int:
     if result.by_source:
         per_src = ", ".join(f"{k}={v}" for k, v in sorted(result.by_source.items()))
         print(f"By source:                {per_src}")
+    if result.by_initial_state:
+        per_state = ", ".join(
+            f"{k}={v}" for k, v in sorted(result.by_initial_state.items())
+        )
+        print(f"Initial states:           {per_state}")
+    if result.auto_rule_matches:
+        print(f"Auto-rule matches:        {result.auto_rule_matches} "
+              f"(down-classified by auto_rules.json)")
     print(f"Pending review now:       {result.pending_review_count_after}")
     if result.failed:
         print("\nFailures:")
@@ -94,8 +105,32 @@ def cmd_import(args) -> int:
             print(f"  - {t}")
     if result.raw_path:
         print(f"\nRaw archive copied to: {result.raw_path}")
-    print("\nAll imported conversations are in 'pending_review'. Use:")
-    print(f"  threadatlas review {args.vault}")
+    if args.auto_approve:
+        print("\n--auto-approve: non-matching conversations were set to 'indexed'.")
+        print("  Auto-rule matches, if any, were still routed to private/quarantined.")
+    else:
+        print("\nAll imported non-matching conversations are in 'pending_review'. Use:")
+        print(f"  threadatlas review {args.vault}")
+    return 0
+
+
+def cmd_rescan_rules(args) -> int:
+    from .. import rescan as rescan_mod
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        result = rescan_mod.rescan(vault, store)
+    finally:
+        store.close()
+    print(json.dumps({
+        "scanned": result.scanned,
+        "down_classified": result.down_classified,
+        "per_transition": result.per_transition,
+        "examples": result.examples[:10],
+    }, indent=2))
+    print("\nNote: rescan only down-classifies "
+          "(pending/indexed -> private/quarantined, private -> quarantined). "
+          "It never re-exposes anything.")
     return 0
 
 

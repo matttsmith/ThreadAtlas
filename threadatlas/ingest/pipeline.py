@@ -1,9 +1,13 @@
 """Import pipeline.
 
-Glues a parser to the SQLite store + normalized vault. Lands every imported
-conversation in ``pending_review``. Conservatively dedupes by
-``source_export_fingerprint`` (per-conversation hash, not per-archive) so
-re-importing the same export does not create duplicates.
+Glues a parser to the SQLite store + normalized vault. Default initial
+state is ``pending_review``. Two escape hatches:
+
+* ``auto_rules.json`` in the vault may DOWN-classify matching
+  conversations to ``private`` or ``quarantined`` at import time.
+* ``--auto-approve`` lifts the default initial state to ``indexed`` for
+  conversations that DIDN'T match any auto-rule. Rules always win over
+  auto-approve: a sensitive thread never transits through ``indexed``.
 """
 
 from __future__ import annotations
@@ -14,8 +18,15 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..core.models import Conversation, Message, State, new_id
+from ..core.models import (
+    EXTRACTABLE_STATES,
+    Conversation,
+    Message,
+    State,
+    new_id,
+)
 from ..core.vault import Vault
+from ..rules import RuleSet, evaluate, load_rules, summarize_matches
 from ..store import Store, transaction, write_normalized
 from .base import ParsedConversation, Parser, registry
 
@@ -33,6 +44,10 @@ class ImportResult:
     failed: list[tuple[str, str]] = field(default_factory=list)
     empty_skipped: list[str] = field(default_factory=list)
     by_source: dict[str, int] = field(default_factory=dict)
+    # Initial-state histogram: counts how many conversations landed in each
+    # state after auto-rules + auto-approve. Keys are State values.
+    by_initial_state: dict[str, int] = field(default_factory=dict)
+    auto_rule_matches: int = 0
     pending_review_count_after: int = 0
     raw_path: Path | None = None
 
@@ -100,19 +115,31 @@ def import_path(
     source: str = "auto",
     copy_raw: bool = True,
     skip_empty: bool = True,
+    auto_approve: bool = False,
 ) -> ImportResult:
     """Run a full import. The path may be a file, directory, or zip archive.
 
-    By default, conversations with zero messages are reported as
-    ``empty_skipped`` rather than stored. Set ``skip_empty=False`` to store
-    them anyway (useful for archival).
+    Initial-state selection per conversation:
+      1. Load ``<vault>/auto_rules.json`` (may be empty).
+      2. Evaluate each conversation against the ruleset. If anything
+         matches, set the state to ``private`` or ``quarantined``.
+      3. Otherwise, if ``auto_approve`` is True, set state to ``indexed``.
+      4. Otherwise, default ``pending_review``.
+
+    Conversations with zero messages are reported as ``empty_skipped``
+    (override with ``skip_empty=False``).
     """
     parser: Parser = _get_parser(source)
     raw_dest = _copy_raw_input(vault, path) if copy_raw else None
     result = ImportResult(raw_path=raw_dest)
 
-    # Parser iteration is separated from the per-conversation try/except so a
-    # parser that dies on a single malformed item doesn't abort the import.
+    try:
+        ruleset = load_rules(vault.root)
+    except ValueError:
+        # Fail loudly: refusing to import keeps sensitive content out of
+        # a wrongly-classified indexed state.
+        raise
+
     try:
         stream = list(parser.iter_conversations(path))
     except Exception as e:
@@ -126,17 +153,22 @@ def import_path(
                     parsed.title or parsed.source_conversation_id or "?"
                 )
                 continue
-            cid = _import_one(vault, store, parsed)
+            cid, initial_state, matched = _import_one(
+                vault, store, parsed, ruleset=ruleset, auto_approve=auto_approve,
+            )
             if cid is None:
                 result.deduped.append(parsed.source_conversation_id or parsed.title)
             else:
                 result.imported.append(cid)
                 result.by_source[parsed.source] = result.by_source.get(parsed.source, 0) + 1
-        except Exception as e:  # defensive: keep importing other conversations
+                result.by_initial_state[initial_state] = (
+                    result.by_initial_state.get(initial_state, 0) + 1
+                )
+                if matched:
+                    result.auto_rule_matches += 1
+        except Exception as e:
             result.failed.append((parsed.title or "?", repr(e)))
 
-    # Snapshot the pending_review count at the end so the operator knows how
-    # much they have to review.
     result.pending_review_count_after = store.conn.execute(
         "SELECT COUNT(*) AS c FROM conversations WHERE state = ?",
         (State.PENDING_REVIEW.value,),
@@ -144,11 +176,46 @@ def import_path(
     return result
 
 
-def _import_one(vault: Vault, store: Store, parsed: ParsedConversation) -> str | None:
+def _choose_initial_state(
+    parsed: ParsedConversation,
+    ruleset: RuleSet,
+    auto_approve: bool,
+) -> tuple[str, str]:
+    """Decide the initial state + any notes_local text from rule matches."""
+    target, matches = evaluate(
+        ruleset,
+        title=parsed.title,
+        summary="",
+        messages=[m.content_text for m in parsed.messages],
+    )
+    notes = summarize_matches(matches)
+    if target is not None:
+        return target, notes
+    if auto_approve:
+        return State.INDEXED.value, notes
+    return State.PENDING_REVIEW.value, notes
+
+
+def _import_one(
+    vault: Vault,
+    store: Store,
+    parsed: ParsedConversation,
+    *,
+    ruleset: RuleSet,
+    auto_approve: bool,
+) -> tuple[str | None, str, bool]:
+    """Import a single conversation.
+
+    Returns ``(conv_id | None, initial_state, auto_rule_matched)``.
+    ``conv_id`` is None for an exact duplicate.
+    """
     fingerprint = _fingerprint_conversation(parsed)
     existing = store.find_conversation_by_fingerprint(fingerprint)
     if existing:
-        return None  # exact duplicate
+        return None, existing.state, False
+
+    initial_state, notes = _choose_initial_state(parsed, ruleset, auto_approve)
+    matched = bool(notes)
 
     conv_id = new_id("conv")
     now = time.time()
@@ -161,8 +228,9 @@ def _import_one(vault: Vault, store: Store, parsed: ParsedConversation) -> str |
         created_at=parsed.created_at,
         updated_at=parsed.updated_at,
         imported_at=now,
-        state=State.PENDING_REVIEW.value,
+        state=initial_state,
         message_count=parsed.message_count,
+        notes_local=notes,
     )
 
     messages: list[Message] = []
@@ -176,14 +244,16 @@ def _import_one(vault: Vault, store: Store, parsed: ParsedConversation) -> str |
             timestamp=pm.timestamp,
             content_structured=pm.content_structured,
             source_message_id=pm.source_message_id,
-            visibility_state_inherited=conv.state,
+            visibility_state_inherited=initial_state,
         ))
 
     with transaction(store):
         store.insert_conversation(conv)
         if messages:
             store.insert_messages(messages)
-        # No FTS for pending_review (kept out of search indexes by design).
+        # Index FTS for states that allow it (indexed + private).
+        if initial_state in EXTRACTABLE_STATES:
+            store.reindex_conversation_fts(conv_id)
 
     write_normalized(vault, conv, messages)
-    return conv_id
+    return conv_id, initial_state, matched

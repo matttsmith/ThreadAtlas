@@ -33,7 +33,19 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Source format. Default: auto-detect")
     s.add_argument("--no-copy", action="store_true",
                    help="Do not copy the input into raw_imports/")
+    s.add_argument("--auto-approve", action="store_true",
+                   help="Set non-rule-matching imports to 'indexed' "
+                        "instead of 'pending_review'. auto_rules.json "
+                        "still routes matches to private/quarantined.")
     s.set_defaults(handler=cmd.cmd_import)
+
+    s = sub.add_parser(
+        "rescan-rules",
+        help="Re-apply auto_rules.json to the existing corpus "
+             "(down-classify only; never re-exposes anything).",
+    )
+    s.add_argument("vault", type=Path)
+    s.set_defaults(handler=cmd.cmd_rescan_rules)
 
     s = sub.add_parser("review", help="List conversations awaiting review")
     s.add_argument("vault", type=Path)
