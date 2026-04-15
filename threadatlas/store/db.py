@@ -26,6 +26,7 @@ from ..core.models import (
     Chunk,
     Conversation,
     DerivedObject,
+    FTS_INDEXED_STATES,
     Message,
     ProvenanceLink,
     State,
@@ -362,15 +363,43 @@ class Store:
     # --- FTS reindex --------------------------------------------------------
 
     def reindex_conversation_fts(self, conversation_id: str) -> None:
-        # Wipe rows for this conversation. fts_conversations is keyed by rowid;
-        # we use the conversation rowid for stable mapping.
+        """Rebuild FTS rows for one conversation.
+
+        Only conversations in ``FTS_INDEXED_STATES`` ({indexed, private}) get
+        FTS rows. All other states have their FTS rows wiped and the function
+        returns without re-inserting. This makes the FTS index itself the
+        ground truth for "searchable surface exists"; passing
+        ``pending_review`` or ``quarantined`` in ``visible_states`` cannot
+        surface any row.
+        """
         cv_row = self.conn.execute(
             "SELECT rowid, * FROM conversations WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()
         if cv_row is None:
             return
+
+        # Always wipe first: state may have just changed.
         self.conn.execute("DELETE FROM fts_conversations WHERE rowid = ?", (cv_row["rowid"],))
+        msg_rowids = [
+            r["rowid"] for r in self.conn.execute(
+                "SELECT rowid FROM messages WHERE conversation_id = ?", (conversation_id,)
+            ).fetchall()
+        ]
+        for rid in msg_rowids:
+            self.conn.execute("DELETE FROM fts_messages WHERE rowid = ?", (rid,))
+        chunk_rowids = [
+            r["rowid"] for r in self.conn.execute(
+                "SELECT rowid FROM chunks WHERE conversation_id = ?", (conversation_id,)
+            ).fetchall()
+        ]
+        for rid in chunk_rowids:
+            self.conn.execute("DELETE FROM fts_chunks WHERE rowid = ?", (rid,))
+
+        if cv_row["state"] not in FTS_INDEXED_STATES:
+            # pending_review / quarantined / any future state: no FTS rows.
+            return
+
         manual = json.loads(cv_row["manual_tags"] or "[]")
         auto = json.loads(cv_row["auto_tags"] or "[]")
         tags_text = " ".join(manual + auto)
@@ -380,25 +409,21 @@ class Store:
              cv_row["summary_long"] or "", tags_text),
         )
 
-        # Messages
         msg_rows = self.conn.execute(
             "SELECT rowid, content_text, role FROM messages WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchall()
         for mr in msg_rows:
-            self.conn.execute("DELETE FROM fts_messages WHERE rowid = ?", (mr["rowid"],))
             self.conn.execute(
                 "INSERT INTO fts_messages(rowid, body, role) VALUES (?, ?, ?)",
                 (mr["rowid"], mr["content_text"] or "", mr["role"] or ""),
             )
 
-        # Chunks
         chunk_rows = self.conn.execute(
             "SELECT rowid, chunk_id, start_message_ordinal, end_message_ordinal, chunk_title, summary_short FROM chunks WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchall()
         for cr in chunk_rows:
-            self.conn.execute("DELETE FROM fts_chunks WHERE rowid = ?", (cr["rowid"],))
             body_rows = self.conn.execute(
                 "SELECT content_text FROM messages WHERE conversation_id = ? AND ordinal BETWEEN ? AND ? ORDER BY ordinal",
                 (conversation_id, cr["start_message_ordinal"], cr["end_message_ordinal"]),
@@ -410,10 +435,16 @@ class Store:
             )
 
     def rebuild_all_fts(self) -> None:
+        """Drop all FTS rows, then reindex only FTS-eligible conversations."""
         self.conn.execute("DELETE FROM fts_conversations")
         self.conn.execute("DELETE FROM fts_messages")
         self.conn.execute("DELETE FROM fts_chunks")
-        for row in self.conn.execute("SELECT conversation_id FROM conversations").fetchall():
+        placeholders = ",".join("?" for _ in FTS_INDEXED_STATES)
+        rows = self.conn.execute(
+            f"SELECT conversation_id FROM conversations WHERE state IN ({placeholders})",
+            tuple(FTS_INDEXED_STATES),
+        ).fetchall()
+        for row in rows:
             self.reindex_conversation_fts(row["conversation_id"])
 
     # --- generic ------------------------------------------------------------

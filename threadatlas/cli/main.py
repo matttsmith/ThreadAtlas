@@ -111,6 +111,37 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("vault", type=Path)
     s.set_defaults(handler=cmd.cmd_mcp)
 
+    s = sub.add_parser(
+        "audit-conversation",
+        help="Full audit dump of one conversation (messages, chunks, provenance, contributed objects)",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_id")
+    s.set_defaults(handler=cmd.cmd_audit_conversation)
+
+    s = sub.add_parser(
+        "audit-object",
+        help="Show a derived object and every provenance link (why is this here?)",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("object_id")
+    s.set_defaults(handler=cmd.cmd_audit_object)
+
+    s = sub.add_parser(
+        "plan-delete",
+        help="Preview what hard delete would remove (read-only dry run)",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_ids", nargs="+")
+    s.set_defaults(handler=cmd.cmd_plan_delete)
+
+    s = sub.add_parser(
+        "process-approved",
+        help="Run chunk + extract across all indexed/private conversations (no state changes)",
+    )
+    s.add_argument("vault", type=Path)
+    s.set_defaults(handler=cmd.cmd_process_approved)
+
     return p
 
 

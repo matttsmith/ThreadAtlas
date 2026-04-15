@@ -41,44 +41,91 @@ from ..store import Store, transaction
 
 # Project mentions: an explicit "project X" phrase is a high-precision signal.
 # The keyword is case-insensitive (inline ``(?i:...)``) but the project name
-# itself must start with a capital letter to keep precision up.
+# itself must start with a capital letter to keep precision up. A trailing
+# word boundary prevents the group from swallowing trailing clauses.
 _PROJECT_RX = re.compile(
-    r"\b(?i:project|initiative|workstream)\s+([A-Z][\w&\-/]{1,40}(?:\s+[A-Z][\w&\-/]{1,40}){0,3})",
+    r"\b(?i:project|initiative|workstream)\s+([A-Z][\w&\-/]{1,40}(?:\s+[A-Z][\w&\-/]{1,40}){0,3})\b",
 )
 
 # A single-token acronym in ALL CAPS that recurs across messages is a likely
 # project/code-name. We harvest then filter by recurrence.
 _ACRONYM_RX = re.compile(r"\b([A-Z]{2,6}(?:-?[A-Z0-9]{0,4})?)\b")
 
-# People/orgs: very rough proper-noun bigram match. We deliberately keep this
-# conservative and bias towards under-merging.
+# People/orgs: conservative proper-noun bigram match. We deliberately keep
+# this conservative and bias towards under-merging.
 _NAMED_ENTITY_RX = re.compile(
     r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b"
 )
 
+# Decisions: we want clearly committed or decided phrasing. "I will" paired
+# with a weak verb ("see", "try") is too noisy; require an action-y verb
+# afterwards, or a decision keyword like "decided", "chose", "picked",
+# "went with", or an explicit "decision:" / "verdict:" prefix.
 _DECISION_PATTERNS = [
-    re.compile(r"\b(?:I (?:will|am going to|decided to|chose to|picked))\b[^.\n]{8,160}", re.I),
-    re.compile(r"\b(?:we (?:will|are going to|decided to|chose to|agreed to))\b[^.\n]{8,160}", re.I),
-    re.compile(r"\bgoing with\b[^.\n]{4,140}", re.I),
+    # Commit verbs that imply a choice was made.
+    re.compile(
+        r"\b(?:I|we)\s+(?:decided to|chose to|picked|went with|are going with|settled on|agreed to)\s+\w{2,}[^.\n]{2,160}",
+        re.I,
+    ),
+    # "I will <verb>" - require the next token to be a plausible action verb
+    # (2+ chars), and the sentence to carry at least a few more words.
+    re.compile(
+        r"\b(?:I|we)\s+(?:will|am going to|are going to)\s+\w{2,}[^.\n]{6,160}",
+        re.I,
+    ),
     re.compile(r"\b(?:final(?:ly)? )?(?:decision|verdict)\s*[:\-]\s*[^.\n]{4,160}", re.I),
 ]
 
+# Open loops: precision signals only.
+# * Explicit TODO markers (case-insensitive but word-bounded).
+# * First-person "I still need to ...", "I need to ..." (not third-person).
+# * "remember to ...", "don't forget to ..." action phrases.
+# * "revisit" / "circle back" with an object.
+# * Explicit "open question" / "unresolved" prefixes.
+#
+# Intentionally dropped: loose "follow up" (matched "as a follow up
+# question" in casual prose), and second-person "you need to" prescriptions
+# (those are advice, not the operator's open loops).
 _OPEN_LOOP_PATTERNS = [
-    re.compile(r"\b(?:TODO|TO DO|To-do)\b[^.\n]{0,160}"),
-    re.compile(r"\b(?:follow[\s-]?up|follow up on)\b[^.\n]{4,160}", re.I),
-    re.compile(r"\b(?:still need to|need to|remember to|don't forget to|reminder to)\b[^.\n]{4,160}", re.I),
-    re.compile(r"\b(?:revisit|come back to|circle back to)\b[^.\n]{4,160}", re.I),
-    re.compile(r"\b(?:open question|unresolved|still figuring out|haven't decided)\b[^.\n]{0,160}", re.I),
+    re.compile(r"\bTODO\b[^.\n]{0,160}"),
+    re.compile(r"\bTO[\s-]?DO\b[^.\n]{0,160}"),
+    re.compile(r"\b(?:I|we)\s+(?:still\s+)?need\s+to\b[^.\n]{4,160}", re.I),
+    re.compile(r"\b(?:remember to|don't forget to|reminder to)\b[^.\n]{4,160}", re.I),
+    re.compile(r"\b(?:revisit|come back to|circle back to)\b\s+\w{2,}[^.\n]{0,160}", re.I),
+    re.compile(r"\bopen question\b[^.\n]{0,160}", re.I),
+    re.compile(r"\bunresolved\b[^.\n]{0,160}", re.I),
+    re.compile(r"\b(?:haven't|have not)\s+decided\b[^.\n]{0,160}", re.I),
+    re.compile(r"\b(?:follow[\s-]?up)\s+(?:on|with|about)\b[^.\n]{4,160}", re.I),
 ]
 
+# Artifacts: documents produced or drafted.
 _ARTIFACT_PATTERNS = [
-    re.compile(r"\b(?:draft|drafted|wrote|outline of|outline for|memo|spec|deck|doc)\s+(?:a\s+|the\s+)?[a-z0-9 \-/_]{3,80}", re.I),
+    re.compile(r"\b(?:drafted|wrote|outline (?:of|for)|memo (?:on|about|for)|spec (?:for|on)|deck (?:for|on)|doc (?:on|for))\s+(?:a\s+|the\s+)?[a-z0-9 \-/_]{3,80}", re.I),
 ]
 
+# Preferences: stable personal patterns. We explicitly drop "I like"/"I hate"
+# because they fire constantly on casual remarks ("I like that idea"). Require
+# stability-signalling words: prefer/always/usually/tend, or an explicit
+# "my preference is ..." / "my rule is ...".
 _PREFERENCE_PATTERNS = [
-    re.compile(r"\b(?:I (?:prefer|like|always|usually|tend to|hate|dislike|never))\b[^.\n]{4,160}", re.I),
-    re.compile(r"\b(?:my (?:preference|style|approach|rule)) (?:is|for)\b[^.\n]{4,160}", re.I),
+    re.compile(r"\bI\s+(?:prefer|always|usually|tend to)\b[^.\n]{4,160}", re.I),
+    re.compile(r"\bmy\s+(?:preference|style|approach|rule)\s+(?:is|for)\b[^.\n]{4,160}", re.I),
 ]
+
+# Bigram entity false-positive starters. When the first word of an
+# "entity" is one of these, we skip the match. This does not try to be a
+# full NER system - it just kills the top noisy sources for AI chat prose.
+_ENTITY_START_STOPWORDS = frozenset({
+    "Hi", "Hello", "Hey", "Thanks", "Thank", "Dear", "Sincerely",
+    "The", "And", "But", "Or", "If", "When", "While", "After", "Before",
+    "However", "Because", "Since", "Although", "Though", "Also",
+    "You", "Your", "We", "Our", "They", "Their", "Let", "Here", "There",
+    "As", "At", "In", "On", "For", "With", "From", "To", "By", "About",
+    "This", "That", "These", "Those",
+    # Common AI-prose starters that look like names when capitalized:
+    "Sure", "Sorry", "Please", "Okay", "Great", "Good", "Excellent",
+    "Got", "Done", "Noted", "Yes", "No", "Maybe",
+})
 
 
 def _excerpt(text: str, match_text: str, before: int = 60, after: int = 120) -> str:
@@ -118,13 +165,23 @@ def _find_chunk_for_message(chunks: list[Chunk], ordinal: int) -> Chunk | None:
 
 
 def _harvest_decisions(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
+    """Collect decisions.
+
+    Overlapping patterns on the same sentence are deduplicated by canonical
+    key so a single phrasing does not spawn multiple "decision" objects.
+    """
     hits: list[_Hit] = []
+    seen_keys: set[str] = set()
     for m in messages:
         if m.role not in {"user", "assistant"}:
             continue
         for rx in _DECISION_PATTERNS:
             for match in rx.finditer(m.content_text or ""):
                 text = match.group(0).strip()
+                key = _canon_key(text)[:120]
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 ch = _find_chunk_for_message(chunks, m.ordinal)
                 hits.append(_Hit(
                     kind=DerivedKind.DECISION.value,
@@ -132,18 +189,24 @@ def _harvest_decisions(messages: list[Message], chunks: list[Chunk]) -> list[_Hi
                     description=text,
                     excerpt=_excerpt(m.content_text, text),
                     chunk_id=ch.chunk_id if ch else None,
+                    canonical_key=key,
                 ))
     return hits
 
 
 def _harvest_open_loops(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
     hits: list[_Hit] = []
+    seen_keys: set[str] = set()
     for m in messages:
         if m.role not in {"user", "assistant"}:
             continue
         for rx in _OPEN_LOOP_PATTERNS:
             for match in rx.finditer(m.content_text or ""):
                 text = match.group(0).strip()
+                key = _canon_key(text)[:120]
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 ch = _find_chunk_for_message(chunks, m.ordinal)
                 hits.append(_Hit(
                     kind=DerivedKind.OPEN_LOOP.value,
@@ -151,18 +214,27 @@ def _harvest_open_loops(messages: list[Message], chunks: list[Chunk]) -> list[_H
                     description=text,
                     excerpt=_excerpt(m.content_text, text),
                     chunk_id=ch.chunk_id if ch else None,
+                    canonical_key=key,
                 ))
     return hits
 
 
 def _harvest_preferences(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
     hits: list[_Hit] = []
+    # Track canonical keys to suppress repeated phrasings within the same
+    # conversation - a preference repeated by the user is still just one
+    # preference.
+    seen_keys: set[str] = set()
     for m in messages:
         if m.role != "user":
             continue
         for rx in _PREFERENCE_PATTERNS:
             for match in rx.finditer(m.content_text or ""):
                 text = match.group(0).strip()
+                key = _canon_key(text)[:120]
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 ch = _find_chunk_for_message(chunks, m.ordinal)
                 hits.append(_Hit(
                     kind=DerivedKind.PREFERENCE.value,
@@ -170,7 +242,7 @@ def _harvest_preferences(messages: list[Message], chunks: list[Chunk]) -> list[_
                     description=text,
                     excerpt=_excerpt(m.content_text, text),
                     chunk_id=ch.chunk_id if ch else None,
-                    canonical_key=_canon_key(text)[:120],
+                    canonical_key=key,
                 ))
     return hits
 
@@ -248,20 +320,28 @@ def _harvest_projects(
 def _harvest_entities(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
     """Conservative proper-noun bigram extraction with a recurrence threshold.
 
-    Only emit if the same name appears >= 2 times, to keep noise down.
+    Only emit if the same name appears >= 2 times, to keep noise down. We
+    additionally drop matches that start with a stopword ("Hi Claude",
+    "Thanks John", "Sure John") since those are overwhelmingly noise in AI
+    chat prose.
     """
     counts: Counter[str] = Counter()
     first_seen: dict[str, Message] = {}
     for m in messages:
         for match in _NAMED_ENTITY_RX.finditer(m.content_text or ""):
             name = match.group(1).strip()
+            first = name.split()[0]
+            if first in _ENTITY_START_STOPWORDS:
+                continue
+            # Also drop bigrams where any word is a stopword-start (catches
+            # "John And Jane" and similar structural tokens).
+            if any(w in _ENTITY_START_STOPWORDS for w in name.split()):
+                continue
             counts[name] += 1
             first_seen.setdefault(name, m)
     hits: list[_Hit] = []
     for name, n in counts.items():
         if n < 2:
-            continue
-        if any(w in name.split() for w in {"The", "And", "But", "Or", "If", "When", "While", "After", "Before", "However"}):
             continue
         m = first_seen[name]
         ch = _find_chunk_for_message(chunks, m.ordinal)

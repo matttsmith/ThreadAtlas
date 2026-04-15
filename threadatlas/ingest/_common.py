@@ -38,6 +38,23 @@ def parse_timestamp(value) -> float | None:
     return None
 
 
+def _decode_json_bytes(data: bytes, source_label: str):
+    """Decode JSON bytes tolerantly.
+
+    Handles UTF-8 with or without BOM. If decoding fails, raise a
+    ``ValueError`` that includes the source label so operators know which
+    archive is malformed.
+    """
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"Could not UTF-8 decode {source_label}: {e}") from e
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Malformed JSON in {source_label}: {e}") from e
+
+
 def read_json_input(path: Path, expected_basename: str) -> tuple[list | dict, str]:
     """Resolve a path to JSON content for the conversations file.
 
@@ -55,23 +72,25 @@ def read_json_input(path: Path, expected_basename: str) -> tuple[list | dict, st
             for name in zf.namelist():
                 if Path(name).name == expected_basename:
                     with zf.open(name) as fh:
-                        return json.load(fh), f"{p.name}!{name}"
+                        data = fh.read()
+                    label = f"{p.name}!{name}"
+                    return _decode_json_bytes(data, label), label
         raise FileNotFoundError(
             f"{expected_basename} not found inside zip {p}"
         )
     if p.is_dir():
         cand = p / expected_basename
         if cand.exists():
-            return json.loads(cand.read_text(encoding="utf-8")), str(cand)
+            return _decode_json_bytes(cand.read_bytes(), str(cand)), str(cand)
         # search recursively (some exports nest in a subfolder)
         for found in p.rglob(expected_basename):
-            return json.loads(found.read_text(encoding="utf-8")), str(found)
+            return _decode_json_bytes(found.read_bytes(), str(found)), str(found)
         raise FileNotFoundError(f"{expected_basename} not found under {p}")
     if p.is_file() and p.name == expected_basename:
-        return json.loads(p.read_text(encoding="utf-8")), str(p)
+        return _decode_json_bytes(p.read_bytes(), str(p)), str(p)
     if p.is_file() and p.suffix.lower() == ".json":
         # User pointed at the file but it has a different name; accept it.
-        return json.loads(p.read_text(encoding="utf-8")), str(p)
+        return _decode_json_bytes(p.read_bytes(), str(p)), str(p)
     raise FileNotFoundError(
         f"Could not locate {expected_basename} at {p} (file/dir/zip)."
     )

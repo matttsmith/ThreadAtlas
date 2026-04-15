@@ -31,11 +31,15 @@ class ImportResult:
     imported: list[str] = field(default_factory=list)
     deduped: list[str] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
+    empty_skipped: list[str] = field(default_factory=list)
+    by_source: dict[str, int] = field(default_factory=dict)
+    pending_review_count_after: int = 0
     raw_path: Path | None = None
 
     @property
     def total(self) -> int:
-        return len(self.imported) + len(self.deduped) + len(self.failed)
+        return (len(self.imported) + len(self.deduped)
+                + len(self.failed) + len(self.empty_skipped))
 
 
 def _fingerprint_conversation(parsed: ParsedConversation) -> str:
@@ -95,21 +99,48 @@ def import_path(
     *,
     source: str = "auto",
     copy_raw: bool = True,
+    skip_empty: bool = True,
 ) -> ImportResult:
-    """Run a full import. The path may be a file, directory, or zip archive."""
+    """Run a full import. The path may be a file, directory, or zip archive.
+
+    By default, conversations with zero messages are reported as
+    ``empty_skipped`` rather than stored. Set ``skip_empty=False`` to store
+    them anyway (useful for archival).
+    """
     parser: Parser = _get_parser(source)
     raw_dest = _copy_raw_input(vault, path) if copy_raw else None
     result = ImportResult(raw_path=raw_dest)
 
-    for parsed in parser.iter_conversations(path):
+    # Parser iteration is separated from the per-conversation try/except so a
+    # parser that dies on a single malformed item doesn't abort the import.
+    try:
+        stream = list(parser.iter_conversations(path))
+    except Exception as e:
+        result.failed.append(("<parser>", repr(e)))
+        stream = []
+
+    for parsed in stream:
         try:
+            if skip_empty and parsed.message_count == 0:
+                result.empty_skipped.append(
+                    parsed.title or parsed.source_conversation_id or "?"
+                )
+                continue
             cid = _import_one(vault, store, parsed)
             if cid is None:
                 result.deduped.append(parsed.source_conversation_id or parsed.title)
             else:
                 result.imported.append(cid)
-        except Exception as e:  # pragma: no cover - defensive
+                result.by_source[parsed.source] = result.by_source.get(parsed.source, 0) + 1
+        except Exception as e:  # defensive: keep importing other conversations
             result.failed.append((parsed.title or "?", repr(e)))
+
+    # Snapshot the pending_review count at the end so the operator knows how
+    # much they have to review.
+    result.pending_review_count_after = store.conn.execute(
+        "SELECT COUNT(*) AS c FROM conversations WHERE state = ?",
+        (State.PENDING_REVIEW.value,),
+    ).fetchone()["c"]
     return result
 
 

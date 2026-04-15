@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..audit import audit_conversation, audit_object, plan_hard_delete
 from ..core.models import (
     EXTRACTABLE_STATES,
     MCP_VISIBLE_STATES,
@@ -76,14 +77,24 @@ def cmd_import(args) -> int:
         )
     finally:
         store.close()
-    print(f"Imported: {len(result.imported)}")
-    print(f"Already present (deduped): {len(result.deduped)}")
+    print(f"Imported:                 {len(result.imported)}")
+    print(f"Already present (dedup):  {len(result.deduped)}")
+    print(f"Empty conversations:      {len(result.empty_skipped)}")
+    print(f"Failed:                   {len(result.failed)}")
+    if result.by_source:
+        per_src = ", ".join(f"{k}={v}" for k, v in sorted(result.by_source.items()))
+        print(f"By source:                {per_src}")
+    print(f"Pending review now:       {result.pending_review_count_after}")
     if result.failed:
-        print(f"Failed: {len(result.failed)}")
+        print("\nFailures:")
         for title, err in result.failed[:10]:
             print(f"  - {title}: {err}")
+    if result.empty_skipped and len(result.empty_skipped) <= 10:
+        print("\nEmpty conversations skipped:")
+        for t in result.empty_skipped:
+            print(f"  - {t}")
     if result.raw_path:
-        print(f"Raw archive copied to: {result.raw_path}")
+        print(f"\nRaw archive copied to: {result.raw_path}")
     print("\nAll imported conversations are in 'pending_review'. Use:")
     print(f"  threadatlas review {args.vault}")
     return 0
@@ -326,3 +337,70 @@ def cmd_export(args) -> int:
 
 def cmd_mcp(args) -> int:
     return mcp_serve(args.vault)
+
+
+def cmd_audit_conversation(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        data = audit_conversation(vault, store, args.conversation_id)
+        if data is None:
+            print(f"Unknown conversation: {args.conversation_id}", file=sys.stderr)
+            return 1
+        print(json.dumps(data, indent=2, default=str))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_audit_object(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        data = audit_object(store, args.object_id)
+        if data is None:
+            print(f"Unknown object: {args.object_id}", file=sys.stderr)
+            return 1
+        print(json.dumps(data, indent=2, default=str))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_plan_delete(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        for cid in args.conversation_ids:
+            data = plan_hard_delete(vault, store, cid)
+            if data is None:
+                print(f"Unknown conversation: {cid}", file=sys.stderr)
+                continue
+            print(json.dumps(data, indent=2, default=str))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_process_approved(args) -> int:
+    """Run chunk + extract across all indexed/private conversations.
+
+    Idempotent and safe. Intended as a 'finish the post-approval pipeline'
+    convenience; does NOT change state or approve anything on its own.
+    """
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        chunked = chunk_all_eligible(store)
+        extracted = extract_all_eligible(store)
+        print(f"Chunked: {len(chunked)} conversations, {sum(chunked.values())} chunks")
+        print(f"Extracted: across {len(extracted)} conversations")
+        agg: dict[str, int] = {}
+        for c in extracted.values():
+            for k, n in c.items():
+                agg[k] = agg.get(k, 0) + n
+        for k, v in sorted(agg.items()):
+            print(f"  {k}: {v}")
+    finally:
+        store.close()
+    return 0

@@ -9,6 +9,7 @@ own private material.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -50,6 +51,29 @@ class SearchHit:
     source: str
 
 
+def _recency_bonus(updated_at: float | None, now: float) -> float:
+    """Small deterministic recency bonus.
+
+    Caps at +0.5 for 'today' and decays to ~0 after ~2 years. Avoids a
+    huge recency effect that would drown out content matches.
+    """
+    if not updated_at:
+        return 0.0
+    age_days = max(0.0, (now - float(updated_at)) / 86400.0)
+    if age_days > 730:
+        return 0.0
+    # Linear decay from 0.5 (today) to 0 (2y ago). Boring, inspectable.
+    return max(0.0, 0.5 * (1.0 - age_days / 730.0))
+
+
+def _exact_phrase_bonus(query: str, text: str) -> float:
+    """+0.75 if the (sanitized) query appears as a contiguous substring."""
+    q = (query or "").strip().lower()
+    if not q or " " not in q:
+        return 0.0
+    return 0.75 if q in (text or "").lower() else 0.0
+
+
 def search_conversations(
     store: Store,
     query: str,
@@ -59,20 +83,27 @@ def search_conversations(
 ) -> list[SearchHit]:
     """Search conversation titles + summaries + tags + message bodies.
 
-    We OR together three FTS subqueries and union the results, then aggregate
-    per-conversation taking the best score.
+    Ranking signals (all deterministic):
+      * bm25 lexical score
+      * 1.5x title/summary hits
+      * +importance_score * 0.05 (capped)
+      * +recency bonus (max +0.5)
+      * +0.75 exact-phrase bonus (multi-word query appearing verbatim)
     """
     qclean = _sanitize_query(query)
     if not qclean:
         return []
 
     state_clause, state_params = _state_in_clause(visible_states)
+    now = time.time()
 
-    # Conversations whose title/summary/tags match.
     title_rows = store.conn.execute(
         f"""
         SELECT c.conversation_id, c.title, c.summary_short, c.state, c.source,
-               -bm25(fts_conversations) AS score, c.summary_short AS snippet
+               c.importance_score, c.updated_at, c.created_at,
+               c.manual_tags,
+               -bm25(fts_conversations) AS score,
+               c.summary_short AS snippet
           FROM fts_conversations
           JOIN conversations c ON c.rowid = fts_conversations.rowid
          WHERE fts_conversations MATCH ? AND c.{state_clause}
@@ -82,10 +113,11 @@ def search_conversations(
         [qclean, *state_params, limit],
     ).fetchall()
 
-    # Messages: pull conversation context.
     msg_rows = store.conn.execute(
         f"""
         SELECT c.conversation_id, c.title, c.state, c.source,
+               c.importance_score, c.updated_at, c.created_at,
+               c.manual_tags,
                -bm25(fts_messages) AS score,
                snippet(fts_messages, 0, '[', ']', '...', 16) AS snippet
           FROM fts_messages
@@ -98,6 +130,13 @@ def search_conversations(
         [qclean, *state_params, limit * 4],
     ).fetchall()
 
+    def _score_row(r, base_boost: float) -> float:
+        base = float(r["score"]) * base_boost
+        imp = float(r["importance_score"] or 0.0)
+        rec = _recency_bonus(r["updated_at"] or r["created_at"], now)
+        phrase = _exact_phrase_bonus(query, (r["title"] or "") + " " + (r["snippet"] or ""))
+        return base + min(imp * 0.05, 0.5) + rec + phrase
+
     by_conv: dict[str, SearchHit] = {}
     for r in title_rows:
         by_conv[r["conversation_id"]] = SearchHit(
@@ -105,21 +144,21 @@ def search_conversations(
             chunk_id=None,
             title=r["title"],
             snippet=(r["snippet"] or r["title"])[:240],
-            score=float(r["score"]) * 1.5,  # title hits are worth more
+            score=_score_row(r, 1.5),
             state=r["state"],
             source=r["source"],
         )
     for r in msg_rows:
         cid = r["conversation_id"]
+        new_score = _score_row(r, 1.0)
         prev = by_conv.get(cid)
-        score = float(r["score"])
-        if prev is None or score > prev.score:
+        if prev is None or new_score > prev.score:
             by_conv[cid] = SearchHit(
                 conversation_id=cid,
                 chunk_id=None,
                 title=r["title"],
                 snippet=r["snippet"] or "",
-                score=score,
+                score=new_score,
                 state=r["state"],
                 source=r["source"],
             )

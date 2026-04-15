@@ -10,6 +10,10 @@ from .models import (
     Source,
     Role,
     DerivedKind,
+    MCP_VISIBLE_STATES,
+    SYNTHESIS_STATES,
+    EXTRACTABLE_STATES,
+    FTS_INDEXED_STATES,
     new_id,
 )
 
@@ -23,5 +27,9 @@ __all__ = [
     "Source",
     "Role",
     "DerivedKind",
+    "MCP_VISIBLE_STATES",
+    "SYNTHESIS_STATES",
+    "EXTRACTABLE_STATES",
+    "FTS_INDEXED_STATES",
     "new_id",
 ]

@@ -42,7 +42,7 @@ def test_full_lifecycle(tmp_path: Path, chatgpt_export_factory):
     ])
     rc, out = _run(["import", str(vault), str(export), "--source", "chatgpt"])
     assert rc == 0
-    assert "Imported: 1" in out
+    assert "Imported:" in out and " 1" in out.splitlines()[0]
 
     # Discover the conversation id from review output.
     rc, out = _run(["review", str(vault)])

@@ -42,6 +42,12 @@ SYNTHESIS_STATES = frozenset({State.INDEXED.value})
 # States that may have chunks, embeddings, and extracted derived objects.
 EXTRACTABLE_STATES = frozenset({State.INDEXED.value, State.PRIVATE.value})
 
+# States whose content may be present in the FTS5 indexes at all. This is the
+# narrowest set and the ground truth for "searchable surface exists" -
+# ``pending_review`` and ``quarantined`` content must never have FTS rows, even
+# if a caller accidentally passes their state in ``visible_states``.
+FTS_INDEXED_STATES = frozenset({State.INDEXED.value, State.PRIVATE.value})
+
 
 class Source(str, Enum):
     CHATGPT = "chatgpt"
