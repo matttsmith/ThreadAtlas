@@ -142,6 +142,49 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("vault", type=Path)
     s.set_defaults(handler=cmd.cmd_process_approved)
 
+    # --- grouping ---
+    s = sub.add_parser(
+        "group",
+        help="Compute thematic groups (deterministic TF-IDF + k-means). Optional LLM naming with --llm-names.",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--broad", type=int, default=10)
+    s.add_argument("--fine", type=int, default=100)
+    s.add_argument("--seed", type=int, default=42)
+    s.add_argument("--llm-names", action="store_true",
+                   help="Use the configured local LLM to name groups (requires local_llm.json with 'group_naming' in used_for)")
+    s.set_defaults(handler=cmd.cmd_group)
+
+    s = sub.add_parser("list-groups", help="List thematic groups")
+    s.add_argument("vault", type=Path)
+    s.add_argument("--level", choices=["broad", "fine"], default=None)
+    s.set_defaults(handler=cmd.cmd_list_groups)
+
+    s = sub.add_parser("group-view", help="Show members of one group")
+    s.add_argument("vault", type=Path)
+    s.add_argument("group_id")
+    s.set_defaults(handler=cmd.cmd_group_view)
+
+    # --- LLM features ---
+    s = sub.add_parser(
+        "summarize",
+        help="Generate topical summaries via the configured local LLM",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--conversation-id", default=None,
+                   help="If set, summarize only this conversation")
+    s.add_argument("--limit", type=int, default=None,
+                   help="Max conversations to summarize in this run")
+    s.set_defaults(handler=cmd.cmd_summarize)
+
+    s = sub.add_parser(
+        "llm-chunk",
+        help="Refine chunk boundaries with the configured local LLM (merges only; never adds splits)",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--conversation-id", default=None)
+    s.set_defaults(handler=cmd.cmd_llm_chunk)
+
     return p
 
 

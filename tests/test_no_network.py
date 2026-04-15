@@ -62,6 +62,41 @@ def test_no_forbidden_imports_in_runtime_package():
     )
 
 
+def test_llm_runner_does_not_open_sockets(monkeypatch, tmp_vault):
+    """The LLM runner must only use subprocess - never network.
+
+    Patches ``socket.socket`` to raise; if any code path opens a socket
+    while the LLM is invoked, the test fails.
+    """
+    import json as _json
+    import socket as _socket
+    import sys as _sys
+
+    sentinel: list = []
+
+    def _block(*a, **kw):
+        sentinel.append((a, kw))
+        raise AssertionError("LLM runner attempted to open a socket")
+
+    monkeypatch.setattr(_socket, "socket", _block)
+    monkeypatch.setattr(_socket, "create_connection", _block, raising=False)
+
+    (tmp_vault.root / "local_llm.json").write_text(_json.dumps({
+        "command": [_sys.executable, "-m", "tests.fake_llm", "summary_ok"],
+        "timeout_seconds": 10,
+        "max_prompt_chars": 2000,
+        "max_response_chars": 1000,
+        "used_for": ["summaries"],
+    }), encoding="utf-8")
+
+    from threadatlas.llm import LLMRunner, load_config
+    cfg = load_config(tmp_vault.root)
+    runner = LLMRunner(tmp_vault, cfg)
+    resp = runner.run("summaries", "ping")
+    assert resp.success
+    assert sentinel == []
+
+
 def test_serve_does_not_open_sockets(monkeypatch):
     """Defensive: simulate a socket() call and confirm serve() never reaches it.
 

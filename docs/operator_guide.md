@@ -130,19 +130,122 @@ your own storage without leaking titles.
 
 Column names are stable; the test suite fails if they drift.
 
+## Thematic grouping
+
+`threadatlas group ./vault` clusters your approved corpus into two levels
+of buckets:
+
+- **Broad** (default k=10) — coarse topic buckets.
+- **Fine** (default k=100) — fine-grained groupings.
+
+The clustering itself is **deterministic**: TF-IDF over conversation
+titles + summaries, L2-normalized sparse vectors, k-means++ with fixed seed.
+Same corpus + same seed + same k → identical groups.
+
+Group labels come in two flavors:
+
+- **Keyword label** — always present. Top distinctive terms per cluster,
+  e.g. `chs, staffing, q2, budget, planning`.
+- **LLM label** — optional. Prose name like `CHS program management`.
+  Only appears if you configured a local LLM (see below) and passed
+  `--llm-names`.
+
+```
+threadatlas group ./vault                      # deterministic only
+threadatlas group ./vault --broad 8 --fine 80  # tune k's
+threadatlas group ./vault --llm-names          # prose names (requires local LLM)
+threadatlas list-groups ./vault
+threadatlas group-view ./vault grp_xyz
+```
+
+Both labels are exported in the `conversations` sheet
+(`broad_group_label`, `fine_group_label`). MCP exposes `list_groups` and
+`get_group` over indexed-only members.
+
+Groups are **wiped and rebuilt** each time you run `threadatlas group`;
+there is no incremental update. Run after important imports or after
+you've changed the state of a meaningful slice of conversations.
+
+## Optional: local LLM integration
+
+ThreadAtlas never talks to the network. If you want higher-quality
+summaries, prose group names, or LLM-assisted chunk refinement, you run
+a **local** model yourself (llama.cpp, MLX-LM, llamafile, Ollama in
+stdin mode, etc.) and point ThreadAtlas at it via a stdio subprocess.
+
+Create `<vault>/local_llm.json`:
+
+```json
+{
+  "command": [
+    "/usr/local/bin/llama-cli",
+    "-m", "/path/to/qwen2.5-3b-instruct-q4.gguf",
+    "--prompt-file", "{PROMPT_FILE}",
+    "--no-conversation",
+    "--temp", "0.1",
+    "--n-predict", "256"
+  ],
+  "timeout_seconds": 120,
+  "max_prompt_chars": 12000,
+  "max_response_chars": 4000,
+  "used_for": ["summaries", "group_naming", "chunk_gating"],
+  "dry_run": false
+}
+```
+
+- `command` is the argv. `{PROMPT_FILE}` is substituted with a temp
+  file; `{PROMPT}` is inline substitution; if neither appears, the
+  prompt goes on stdin.
+- `used_for` is a **whitelist**. A task not listed will be refused.
+  Default shipping state is the feature disabled. Remove tasks you
+  don't want the LLM doing.
+- `dry_run: true` makes every call print the prompt locally and skip
+  the subprocess. Use this to inspect exactly what would be sent.
+- Every call is logged (metadata only, no content) to
+  `<vault>/logs/llm_calls.jsonl`.
+
+Hardware guidance for a MacBook Air M4 with 24 GB unified memory:
+Qwen2.5-3B-Instruct Q4 (~2 GB) or Llama-3.2-3B-Instruct Q4 (~2 GB)
+are more than enough for summarization and group naming. Larger
+models (7B) give marginally better prose for group names.
+
+### LLM commands
+
+- `threadatlas summarize ./vault` — generate topical 2-3 sentence
+  summaries; updates `summary_short` and sets `summary_source = llm`.
+- `threadatlas summarize ./vault --conversation-id conv_xxx` — just one.
+- `threadatlas group ./vault --llm-names` — prose names for each cluster.
+- `threadatlas llm-chunk ./vault` — refine chunk boundaries (see next).
+
+### LLM-assisted chunking
+
+The deterministic chunker proposes boundaries. `threadatlas llm-chunk`
+asks the LLM, for each adjacent boundary, "is this a clear topic
+shift?" — and **only** removes boundaries the LLM says aren't clear.
+The LLM cannot add splits, only collapse them. Net effect: fewer,
+more defensible chunks.
+
+The prompt biases the LLM toward "not a split" when uncertain, so the
+failure mode is "keep existing chunks" rather than "hallucinate new
+ones." On malformed LLM output, the original deterministic boundary
+is preserved.
+
 ## What v1 intentionally does NOT do
 
 - **No cloud APIs.** No OpenAI, no Gemini, no Anthropic API. No outbound
   connections at all.
-- **No local LLM calls by default.** Summaries and extraction are
-  deterministic regex/heuristic. If you later add a local LLM, do it via
-  a stdio subprocess; nothing else.
+- **No local LLM by default.** You must install a model and create
+  `local_llm.json` yourself. Nothing is downloaded.
 - **No auto-merge of projects or entities.** Under-merge is the default;
   you can merge by hand later.
 - **No background workers.** Every action is an explicit CLI command.
 - **No TUI, no progress bars, no ncurses.** The output is designed to be
   piped into other tools.
 - **No in-app updater.**
+- **LLM cannot invent new chunk splits.** The boundary gate can only
+  remove, never add.
+- **LLM is never used for decisions / open loops / entity extraction.**
+  Those stay deterministic.
 
 ## Troubleshooting
 

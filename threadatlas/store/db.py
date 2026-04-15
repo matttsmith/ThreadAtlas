@@ -47,11 +47,30 @@ class Store:
     def bootstrap(self) -> None:
         sql = SCHEMA_PATH.read_text(encoding="utf-8")
         self.conn.executescript(sql)
+        self._migrate()
         self.conn.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
-            ("schema_version", "1"),
+            ("schema_version", "2"),
         )
         self.conn.commit()
+
+    # --- migrations ----------------------------------------------------------
+    #
+    # We do not ship a full migrations framework in v1.x. Instead, every
+    # additive schema change is expressed as an idempotent guard against
+    # ``pragma_table_info`` and applied here. Keep each step small,
+    # inspectable, and obviously safe on an already-up-to-date DB.
+
+    def _has_column(self, table: str, column: str) -> bool:
+        rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r["name"] == column for r in rows)
+
+    def _migrate(self) -> None:
+        # v1.1 -> v1.2: conversations.summary_source column.
+        if not self._has_column("conversations", "summary_source"):
+            self.conn.execute(
+                "ALTER TABLE conversations ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'deterministic'"
+            )
 
     def close(self) -> None:
         # Idempotent: callers may close more than once during teardown.
@@ -359,6 +378,101 @@ class Store:
             (conversation_id,),
         ).fetchall()
         return [_row_to_prov(r) for r in rows]
+
+    # --- groups -------------------------------------------------------------
+
+    def replace_groups(self, level: str, rows: list[dict]) -> None:
+        """Wipe all groups at ``level`` and insert a fresh batch.
+
+        ``rows`` entries: {group_id, keyword_label, llm_label, member_count,
+        generation_id, created_at, member_ids}.
+        """
+        self.conn.execute(
+            "DELETE FROM conversation_group_memberships WHERE group_id IN ("
+            "  SELECT group_id FROM conversation_groups WHERE level = ?)",
+            (level,),
+        )
+        self.conn.execute("DELETE FROM conversation_groups WHERE level = ?", (level,))
+        for r in rows:
+            self.conn.execute(
+                """
+                INSERT INTO conversation_groups (
+                    group_id, level, keyword_label, llm_label, member_count,
+                    created_at, generation_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (r["group_id"], level, r["keyword_label"], r.get("llm_label"),
+                 r["member_count"], r["created_at"], r["generation_id"]),
+            )
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO conversation_group_memberships(conversation_id, group_id) VALUES (?, ?)",
+                [(cid, r["group_id"]) for cid in r["member_ids"]],
+            )
+
+    def set_group_llm_label(self, group_id: str, llm_label: str | None) -> None:
+        self.conn.execute(
+            "UPDATE conversation_groups SET llm_label = ? WHERE group_id = ?",
+            (llm_label, group_id),
+        )
+
+    def list_groups(self, level: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM conversation_groups"
+        params: list = []
+        if level is not None:
+            sql += " WHERE level = ?"
+            params.append(level)
+        sql += " ORDER BY member_count DESC, keyword_label"
+        return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def get_group(self, group_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM conversation_groups WHERE group_id = ?", (group_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_group_members(self, group_id: str) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT conversation_id FROM conversation_group_memberships WHERE group_id = ?",
+            (group_id,),
+        ).fetchall()
+        return [r["conversation_id"] for r in rows]
+
+    def list_group_memberships_for_conversation(self, conversation_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT g.*
+              FROM conversation_groups g
+              JOIN conversation_group_memberships m ON m.group_id = g.group_id
+             WHERE m.conversation_id = ?
+             ORDER BY g.level
+            """,
+            (conversation_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # --- summaries ----------------------------------------------------------
+
+    def update_conversation_summary(
+        self,
+        conversation_id: str,
+        *,
+        summary_short: str | None = None,
+        summary_long: str | None = None,
+        summary_source: str = "deterministic",
+    ) -> None:
+        sets: list[str] = ["summary_source = ?"]
+        params: list = [summary_source]
+        if summary_short is not None:
+            sets.append("summary_short = ?")
+            params.append(summary_short)
+        if summary_long is not None:
+            sets.append("summary_long = ?")
+            params.append(summary_long)
+        params.append(conversation_id)
+        self.conn.execute(
+            f"UPDATE conversations SET {', '.join(sets)} WHERE conversation_id = ?",
+            params,
+        )
 
     # --- FTS reindex --------------------------------------------------------
 

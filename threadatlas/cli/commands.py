@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ..audit import audit_conversation, audit_object, plan_hard_delete
+from ..cluster import regroup_all
 from ..core.models import (
     EXTRACTABLE_STATES,
     MCP_VISIBLE_STATES,
@@ -23,6 +24,10 @@ from ..extract import (
     extract_for_conversation,
 )
 from ..ingest import import_path
+from ..llm import LLMRunner, load_config as load_llm_config
+from ..llm.chunking import llm_chunk_all_eligible, llm_chunk_conversation
+from ..llm.label_groups import label_all_groups
+from ..llm.summarize import summarize_all_eligible, summarize_conversation
 from ..mcp import serve as mcp_serve
 from ..search import (
     list_decisions,
@@ -377,6 +382,130 @@ def cmd_plan_delete(args) -> int:
                 print(f"Unknown conversation: {cid}", file=sys.stderr)
                 continue
             print(json.dumps(data, indent=2, default=str))
+    finally:
+        store.close()
+    return 0
+
+
+def _require_llm_runner(vault, task: str):
+    """Load the LLM config and construct a runner, or raise with a clear error."""
+    cfg = load_llm_config(vault.root)
+    if cfg is None:
+        raise SystemExit(
+            f"LLM is not configured. Create {vault.root}/local_llm.json "
+            f"with a 'command' and 'used_for' whitelist that includes '{task}'."
+        )
+    if not cfg.is_enabled_for(task):
+        raise SystemExit(
+            f"LLM task {task!r} is not enabled in local_llm.json 'used_for'. "
+            f"Currently: {sorted(cfg.used_for)}"
+        )
+    return LLMRunner(vault, cfg)
+
+
+def cmd_group(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        result = regroup_all(
+            store,
+            broad_k=args.broad,
+            fine_k=args.fine,
+            seed=args.seed,
+        )
+        if result.skipped_empty_corpus:
+            print("Skipped: corpus too small to cluster.")
+            return 0
+        print(f"Members:    {result.members}")
+        print(f"Broad k:    {result.broad_groups}")
+        print(f"Fine k:     {result.fine_groups}")
+        if args.llm_names:
+            runner = _require_llm_runner(vault, "group_naming")
+            outcomes = label_all_groups(vault, store, runner, level=None)
+            ok = sum(1 for o in outcomes if o.success)
+            fail = len(outcomes) - ok
+            print(f"\nLLM-named groups: {ok} succeeded, {fail} skipped/failed")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_list_groups(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        groups = store.list_groups(level=args.level)
+        if not groups:
+            print("No groups. Run `threadatlas group <vault>` first.")
+            return 0
+        _print_table(
+            ["id", "level", "n", "keyword_label", "llm_label"],
+            [
+                [g["group_id"][:22], g["level"], g["member_count"],
+                 (g["keyword_label"] or "")[:40],
+                 (g["llm_label"] or "")[:40]]
+                for g in groups
+            ],
+        )
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_group_view(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        g = store.get_group(args.group_id)
+        if g is None:
+            print(f"Unknown group: {args.group_id}", file=sys.stderr)
+            return 1
+        members = store.list_group_members(args.group_id)
+        print(json.dumps({
+            "group": g,
+            "members": members,
+        }, indent=2, default=str))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_summarize(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        runner = _require_llm_runner(vault, "summaries")
+        if args.conversation_id:
+            outcome = summarize_conversation(vault, store, runner, args.conversation_id)
+            print(json.dumps(outcome.__dict__, indent=2))
+        else:
+            outcomes = summarize_all_eligible(vault, store, runner, limit=args.limit)
+            ok = sum(1 for o in outcomes if o.success)
+            print(f"Summarized: {ok} / {len(outcomes)}")
+            for o in outcomes:
+                if not o.success:
+                    print(f"  fail: {o.conversation_id}: {o.error}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_llm_chunk(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        runner = _require_llm_runner(vault, "chunk_gating")
+        if args.conversation_id:
+            outcome = llm_chunk_conversation(vault, store, runner, args.conversation_id)
+            print(json.dumps(outcome.__dict__, indent=2, default=str))
+        else:
+            outcomes = llm_chunk_all_eligible(vault, store, runner)
+            merged_total = sum(o.merges for o in outcomes)
+            print(f"Conversations: {len(outcomes)}")
+            print(f"Merges applied: {merged_total}")
+            llm_fail = sum(o.llm_failures for o in outcomes)
+            if llm_fail:
+                print(f"LLM failures: {llm_fail} (deterministic boundaries preserved)")
     finally:
         store.close()
     return 0

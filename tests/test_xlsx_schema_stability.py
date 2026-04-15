@@ -21,9 +21,11 @@ EXPECTED_COLUMNS = {
         "conversation_id", "source", "title",
         "created_at", "updated_at", "imported_at",
         "state", "message_count",
-        "summary_short", "manual_tags", "auto_tags",
+        "summary_short", "summary_source", "manual_tags", "auto_tags",
         "primary_project_id", "importance_score", "resurfacing_score",
-        "has_open_loops", "notes_local",
+        "has_open_loops",
+        "broad_group_label", "fine_group_label",
+        "notes_local",
     ],
     "chunks": [
         "chunk_id", "conversation_id", "conversation_title", "chunk_index",

@@ -145,6 +145,50 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
     def t_list_entities(args: dict) -> dict:
         return _ok(list_entities(store, visible_states=visible, limit=int(args.get("limit") or 200)))
 
+    def t_list_groups(args: dict) -> dict:
+        level = args.get("level")
+        if level not in (None, "broad", "fine"):
+            return _err("level must be 'broad' or 'fine'")
+        groups = store.list_groups(level=level)
+        # Filter out groups whose visible member count (indexed only) is zero,
+        # so MCP never surfaces a phantom group composed entirely of private
+        # members.
+        out: list[dict] = []
+        for g in groups:
+            members = store.list_group_members(g["group_id"])
+            if not members:
+                continue
+            placeholders = ",".join("?" for _ in members)
+            visible = store.conn.execute(
+                f"SELECT COUNT(*) AS c FROM conversations WHERE conversation_id IN ({placeholders}) AND state = 'indexed'",
+                members,
+            ).fetchone()["c"]
+            if visible == 0:
+                continue
+            g = dict(g)
+            g["visible_member_count"] = visible
+            out.append(g)
+        return _ok(out)
+
+    def t_get_group(args: dict) -> dict:
+        gid = str(args.get("group_id") or "")
+        g = store.get_group(gid)
+        if g is None:
+            return _err(f"Unknown group: {gid}")
+        member_ids = store.list_group_members(gid)
+        # MCP only exposes indexed members.
+        if member_ids:
+            placeholders = ",".join("?" for _ in member_ids)
+            rows = store.conn.execute(
+                f"SELECT conversation_id, title FROM conversations "
+                f"WHERE conversation_id IN ({placeholders}) AND state = 'indexed'",
+                member_ids,
+            ).fetchall()
+            visible = [{"conversation_id": r["conversation_id"], "title": r["title"]} for r in rows]
+        else:
+            visible = []
+        return _ok({"group": dict(g), "indexed_members": visible})
+
     def t_inspect_conversation_storage(args: dict) -> dict:
         """Audit hook: what does the system store about this conversation?
 
@@ -211,6 +255,12 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         _Tool("list_entities", "List recurring entities across indexed material.",
               {"type": "object", "properties": {"limit": {"type": "integer"}}},
               t_list_entities),
+        _Tool("list_groups", "List thematic conversation groups (broad/fine) with visible (indexed) member counts.",
+              {"type": "object", "properties": {"level": {"type": "string", "enum": ["broad", "fine"]}}},
+              t_list_groups),
+        _Tool("get_group", "Show one group with its indexed members (no private/quarantined/pending leakage).",
+              {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
+              t_get_group),
         _Tool("inspect_conversation_storage", "Metadata-only audit of what is stored for a conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_inspect_conversation_storage),

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     message_count INTEGER NOT NULL DEFAULT 0,
     summary_short TEXT NOT NULL DEFAULT '',
     summary_long TEXT,
+    summary_source TEXT NOT NULL DEFAULT 'deterministic',
     manual_tags TEXT NOT NULL DEFAULT '[]',
     auto_tags TEXT NOT NULL DEFAULT '[]',
     primary_project_id TEXT,
@@ -113,6 +114,29 @@ CREATE TABLE IF NOT EXISTS exports_log (
     created_at REAL NOT NULL,
     row_counts TEXT NOT NULL DEFAULT '{}'
 );
+
+-- Thematic groups (v1.2).
+-- Deterministic (TF-IDF + k-means); optional LLM naming layered on top.
+-- Regenerated in full by ``threadatlas group``; we do not try to diff.
+CREATE TABLE IF NOT EXISTS conversation_groups (
+    group_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL,                 -- 'broad' or 'fine'
+    keyword_label TEXT NOT NULL,         -- deterministic; always present
+    llm_label TEXT,                      -- nullable; set by optional LLM pass
+    member_count INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    generation_id TEXT NOT NULL          -- shared per batch for cleanup
+);
+CREATE INDEX IF NOT EXISTS idx_cg_level ON conversation_groups(level);
+CREATE INDEX IF NOT EXISTS idx_cg_gen ON conversation_groups(generation_id);
+
+CREATE TABLE IF NOT EXISTS conversation_group_memberships (
+    conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    group_id TEXT NOT NULL REFERENCES conversation_groups(group_id) ON DELETE CASCADE,
+    PRIMARY KEY (conversation_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cgm_conv ON conversation_group_memberships(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_cgm_group ON conversation_group_memberships(group_id);
 
 -- FTS5 indexes ----------------------------------------------------------------
 --

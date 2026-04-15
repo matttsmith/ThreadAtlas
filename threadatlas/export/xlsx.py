@@ -149,14 +149,31 @@ def _build_conversations(ws, store: Store, states: tuple[str, ...]) -> None:
         "conversation_id", "source", "title",
         "created_at", "updated_at", "imported_at",
         "state", "message_count",
-        "summary_short", "manual_tags", "auto_tags",
+        "summary_short", "summary_source", "manual_tags", "auto_tags",
         "primary_project_id", "importance_score", "resurfacing_score",
-        "has_open_loops", "notes_local",
+        "has_open_loops",
+        "broad_group_label", "fine_group_label",
+        "notes_local",
     ]
     _write_header(ws, cols)
     state_clause, params = _state_filter_clause(states)
     rows = store.conn.execute(
-        f"SELECT * FROM conversations WHERE {state_clause} ORDER BY COALESCE(updated_at, created_at, imported_at) DESC",
+        f"""
+        SELECT c.*,
+               (SELECT COALESCE(g.llm_label, g.keyword_label)
+                  FROM conversation_group_memberships m
+                  JOIN conversation_groups g ON g.group_id = m.group_id
+                 WHERE m.conversation_id = c.conversation_id AND g.level = 'broad'
+                 LIMIT 1) AS broad_group_label,
+               (SELECT COALESCE(g.llm_label, g.keyword_label)
+                  FROM conversation_group_memberships m
+                  JOIN conversation_groups g ON g.group_id = m.group_id
+                 WHERE m.conversation_id = c.conversation_id AND g.level = 'fine'
+                 LIMIT 1) AS fine_group_label
+          FROM conversations c
+         WHERE c.{state_clause}
+         ORDER BY COALESCE(c.updated_at, c.created_at, c.imported_at) DESC
+        """,
         params,
     ).fetchall()
     for r in rows:
@@ -164,12 +181,14 @@ def _build_conversations(ws, store: Store, states: tuple[str, ...]) -> None:
             r["conversation_id"], r["source"], r["title"],
             _iso(r["created_at"]), _iso(r["updated_at"]), _iso(r["imported_at"]),
             r["state"], r["message_count"],
-            r["summary_short"] or "",
+            r["summary_short"] or "", r["summary_source"] or "deterministic",
             ", ".join(json.loads(r["manual_tags"] or "[]")),
             ", ".join(json.loads(r["auto_tags"] or "[]")),
             r["primary_project_id"] or "",
             r["importance_score"], r["resurfacing_score"],
             "yes" if r["has_open_loops"] else "no",
+            r["broad_group_label"] or "",
+            r["fine_group_label"] or "",
             r["notes_local"] or "",
         ])
 
