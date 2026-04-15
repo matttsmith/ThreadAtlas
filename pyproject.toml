@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "threadatlas"
+version = "0.1.0"
+description = "Fully local, deletion-aware conversation intelligence layer for ChatGPT and Claude exports."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "ThreadAtlas" }]
+# Runtime dependencies are intentionally minimal and free of network clients.
+# - openpyxl: XLSX export (pure Python, no network)
+# Everything else uses only the Python standard library.
+dependencies = [
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+mcp = [
+    # Optional. The CLI ships a built-in stdio JSON-RPC server that does not
+    # require this package. Install only if you want to use the official MCP SDK.
+    "mcp>=0.9",
+]
+dev = [
+    "pytest>=7.0",
+]
+
+[project.scripts]
+threadatlas = "threadatlas.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["threadatlas*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

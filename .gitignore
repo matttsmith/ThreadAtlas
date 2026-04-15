@@ -1,0 +1,22 @@
+# Build / packaging
+*.egg-info/
+build/
+dist/
+__pycache__/
+*.py[cod]
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Vaults (user data should never be checked in)
+vault/
+vaults/
+*.sqlite3
+*.sqlite3-*
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
