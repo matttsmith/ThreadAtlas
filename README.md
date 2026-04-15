@@ -290,7 +290,7 @@ deleted content.
 
 ## Tests and CI
 
-The suite has ~157 tests covering parsing, state transitions, visibility
+The suite has ~180 tests covering parsing, state transitions, visibility
 boundaries, hard-delete cascade, chunking, heuristic extraction, search
 ranking, XLSX schema stability, MCP tool behavior, LLM subprocess runner,
 TF-IDF + k-means determinism, full LLM pipeline integration against a

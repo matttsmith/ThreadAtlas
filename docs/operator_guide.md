@@ -239,8 +239,9 @@ is preserved.
 - **No auto-merge of projects or entities.** Under-merge is the default;
   you can merge by hand later.
 - **No background workers.** Every action is an explicit CLI command.
-- **No TUI, no progress bars, no ncurses.** The output is designed to be
-  piped into other tools.
+- **No progress bars or spinners.** CLI output is designed to be piped
+  into other tools. The optional curses TUI (`threadatlas tui`) is
+  read-only and takes over its own terminal; it is never in the pipe.
 - **No in-app updater.**
 - **LLM cannot invent new chunk splits.** The boundary gate can only
   remove, never add.

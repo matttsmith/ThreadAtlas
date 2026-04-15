@@ -37,7 +37,9 @@ cli/       argparse subcommands
 * `quarantined` - normalized only; chunks/embeddings/provenance stripped
 * `deleted` - hard delete physically removes records
 
-The CLI is the only path to change state. There are no mutating MCP tools.
+The CLI is the only path to change visibility state. MCP is read-only by
+default; narrow, non-state-changing write tools (label/tag/title edits)
+are opt-in via ``<vault>/mcp_config.json``. See ``docs/mcp_setup.md``.
 
 ## Vault layout
 
