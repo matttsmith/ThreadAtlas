@@ -104,7 +104,7 @@ threadatlas export ./vault --profile review_workbook
 threadatlas export ./vault --profile project_workbook
 threadatlas report ./vault                 # static HTML dashboard
 
-# 8. Let Claude query your approved corpus.
+# 8. Let Claude query your approved corpus (see docs/mcp_setup.md).
 threadatlas mcp ./vault                    # stdio MCP server
 
 # 9. Operator hygiene.
@@ -114,6 +114,27 @@ threadatlas rebuild-from-normalized ./vault
 ```
 
 Full CLI reference: `threadatlas --help` and `threadatlas <cmd> --help`.
+
+### Wiring to Claude Desktop / other MCP hosts
+
+See **[docs/mcp_setup.md](docs/mcp_setup.md)** for the exact
+`claude_desktop_config.json` config, platform-specific paths, log
+locations, verification, and troubleshooting. TL;DR:
+
+```json
+{
+  "mcpServers": {
+    "threadatlas": {
+      "command": "/absolute/path/to/threadatlas",
+      "args": ["mcp", "/absolute/path/to/vault"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop, start a new conversation, the ThreadAtlas tools
+appear. Claude sees only `indexed` conversations; there are no mutating
+tools.
 
 ---
 
