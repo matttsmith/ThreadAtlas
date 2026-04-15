@@ -452,6 +452,29 @@ class Store:
 
     # --- summaries ----------------------------------------------------------
 
+    def add_manual_tags(self, conversation_id: str, tags: list[str]) -> list[str]:
+        conv = self.get_conversation(conversation_id)
+        if conv is None:
+            raise KeyError(conversation_id)
+        current = list(conv.manual_tags or [])
+        for t in tags:
+            t = (t or "").strip()
+            if t and t not in current:
+                current.append(t)
+        self.update_conversation_meta(conversation_id, manual_tags=current)
+        self.reindex_conversation_fts(conversation_id)
+        return current
+
+    def remove_manual_tags(self, conversation_id: str, tags: list[str]) -> list[str]:
+        conv = self.get_conversation(conversation_id)
+        if conv is None:
+            raise KeyError(conversation_id)
+        remove = {(t or "").strip() for t in tags}
+        current = [t for t in (conv.manual_tags or []) if t not in remove]
+        self.update_conversation_meta(conversation_id, manual_tags=current)
+        self.reindex_conversation_fts(conversation_id)
+        return current
+
     def update_conversation_summary(
         self,
         conversation_id: str,

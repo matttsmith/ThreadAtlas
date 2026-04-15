@@ -60,6 +60,10 @@ EXPECTED_COLUMNS = {
         "link_id", "object_id", "object_kind", "object_title",
         "conversation_id", "conversation_title", "chunk_id", "excerpt",
     ],
+    "groups": [
+        "group_id", "level", "keyword_label", "llm_label", "member_count",
+        "member_ids",
+    ],
 }
 
 
@@ -95,7 +99,7 @@ def test_project_workbook_columns_exact(tmp_vault, store, chatgpt_export_factory
     out = export_workbook(tmp_vault, store, profile="project_workbook")
     wb = load_workbook(out)
     for sheet in ("conversations", "chunks", "projects", "decisions",
-                  "open_loops", "entities", "provenance"):
+                  "open_loops", "entities", "groups", "provenance"):
         headers = [c.value for c in wb[sheet][1]]
         assert headers == EXPECTED_COLUMNS[sheet], f"{sheet} columns drifted: {headers}"
 

@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import health, recovery, report as report_mod
 from ..audit import audit_conversation, audit_object, plan_hard_delete
 from ..cluster import regroup_all
 from ..core.models import (
@@ -132,7 +133,9 @@ def make_state_handler(target_state: str):
             failures = []
             for cid in args.conversation_ids:
                 try:
-                    new_state = transition_state(store, cid, target_state)
+                    # Pass the vault so normalized JSON is kept in sync and
+                    # `rebuild-from-normalized` can restore state correctly.
+                    new_state = transition_state(store, cid, target_state, vault=vault)
                     print(f"{cid} -> {new_state}")
                 except (KeyError, ValueError) as e:
                     failures.append((cid, str(e)))
@@ -479,12 +482,97 @@ def cmd_summarize(args) -> int:
             outcome = summarize_conversation(vault, store, runner, args.conversation_id)
             print(json.dumps(outcome.__dict__, indent=2))
         else:
-            outcomes = summarize_all_eligible(vault, store, runner, limit=args.limit)
+            outcomes = summarize_all_eligible(
+                vault, store, runner, limit=args.limit, force=args.force,
+            )
             ok = sum(1 for o in outcomes if o.success)
-            print(f"Summarized: {ok} / {len(outcomes)}")
+            print(f"Summarized: {ok} / {len(outcomes)} "
+                  f"(resumable; pass --force to re-summarize LLM-summarized rows)")
             for o in outcomes:
                 if not o.success:
                     print(f"  fail: {o.conversation_id}: {o.error}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_check(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        warnings = health.quick_check(vault, store)
+        if not warnings:
+            print("OK: vault is healthy.")
+            return 0
+        print(f"{len(warnings)} warning(s):")
+        for w in warnings:
+            print(f"  - {w}")
+        # Non-zero exit so scripts can act on health failures.
+        return 1
+    finally:
+        store.close()
+
+
+def cmd_rebuild_from_normalized(args) -> int:
+    vault = open_vault(args.vault)
+    if not args.yes:
+        print("This will delete the existing DB and rebuild from vault/normalized/.")
+        print("The old DB will be backed up to vault/db/threadatlas.sqlite3.bak.<ts>.")
+        ans = input("Proceed? [y/N] ").strip().lower()
+        if ans != "y":
+            print("Aborted.")
+            return 1
+    result = recovery.rebuild_from_normalized(vault)
+    print(json.dumps({
+        "conversations_restored": result.conversations_restored,
+        "chunks_built": result.chunks_built,
+        "extraction_ran": result.extraction_ran,
+        "skipped": len(result.skipped),
+        "backup_path": str(result.backup_path) if result.backup_path else None,
+    }, indent=2))
+    if result.skipped:
+        print("\nSkipped files:")
+        for p, err in result.skipped[:10]:
+            print(f"  {p}: {err}")
+    return 0
+
+
+def cmd_report(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        out = report_mod.generate_report(vault, store, out_path=args.out)
+        print(f"Wrote {out}")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_tag(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        new_tags = store.add_manual_tags(args.conversation_id, args.tags)
+        store.conn.commit()
+        print(f"{args.conversation_id} manual_tags: {new_tags}")
+    except KeyError as e:
+        print(f"Unknown conversation: {e}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_untag(args) -> int:
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        remaining = store.remove_manual_tags(args.conversation_id, args.tags)
+        store.conn.commit()
+        print(f"{args.conversation_id} manual_tags: {remaining}")
+    except KeyError as e:
+        print(f"Unknown conversation: {e}", file=sys.stderr)
+        return 1
     finally:
         store.close()
     return 0

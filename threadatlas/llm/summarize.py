@@ -90,12 +90,32 @@ def summarize_conversation(
 
 
 def summarize_all_eligible(
-    vault: Vault, store: Store, runner: LLMRunner, *, limit: int | None = None
+    vault: Vault,
+    store: Store,
+    runner: LLMRunner,
+    *,
+    limit: int | None = None,
+    force: bool = False,
 ) -> list[SummarizeOutcome]:
+    """Summarize every eligible conversation.
+
+    When ``force`` is False (the default), conversations that already have
+    ``summary_source='llm'`` are skipped. This makes long runs resumable -
+    a crashed run can simply be restarted without redoing completed work.
+    """
     state_placeholders = ",".join(f"'{s}'" for s in EXTRACTABLE_STATES)
-    rows = store.conn.execute(
-        f"SELECT conversation_id FROM conversations WHERE state IN ({state_placeholders}) ORDER BY imported_at"
-    ).fetchall()
+    if force:
+        rows = store.conn.execute(
+            f"SELECT conversation_id FROM conversations "
+            f"WHERE state IN ({state_placeholders}) ORDER BY imported_at"
+        ).fetchall()
+    else:
+        rows = store.conn.execute(
+            f"SELECT conversation_id FROM conversations "
+            f"WHERE state IN ({state_placeholders}) "
+            f"  AND summary_source != 'llm' "
+            f"ORDER BY imported_at"
+        ).fetchall()
     ids = [r["conversation_id"] for r in rows]
     if limit is not None:
         ids = ids[:limit]

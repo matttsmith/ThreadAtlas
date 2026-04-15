@@ -146,13 +146,20 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         return _ok(list_entities(store, visible_states=visible, limit=int(args.get("limit") or 200)))
 
     def t_list_groups(args: dict) -> dict:
+        """MCP-safe group list.
+
+        Groups are clustered over ``indexed + private`` but labels exposed
+        via MCP are recomputed from ONLY the indexed members to avoid
+        leaking private content into label text. Groups with fewer than
+        ``MIN_INDEXED_FOR_SAFE_LABEL`` indexed members get no label (but
+        are still listed with a count, so Claude knows they exist).
+        """
+        from ..cluster.safe_labels import compute_safe_keyword_label
+
         level = args.get("level")
         if level not in (None, "broad", "fine"):
             return _err("level must be 'broad' or 'fine'")
         groups = store.list_groups(level=level)
-        # Filter out groups whose visible member count (indexed only) is zero,
-        # so MCP never surfaces a phantom group composed entirely of private
-        # members.
         out: list[dict] = []
         for g in groups:
             members = store.list_group_members(g["group_id"])
@@ -165,18 +172,26 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             ).fetchone()["c"]
             if visible == 0:
                 continue
-            g = dict(g)
-            g["visible_member_count"] = visible
-            out.append(g)
+            safe_label = compute_safe_keyword_label(store, g["group_id"])
+            out.append({
+                "group_id": g["group_id"],
+                "level": g["level"],
+                "member_count": g["member_count"],
+                "visible_member_count": visible,
+                # MCP NEVER exposes the mixed-pool keyword_label or llm_label
+                # directly; only the safe label derived from indexed members.
+                "label": safe_label,
+            })
         return _ok(out)
 
     def t_get_group(args: dict) -> dict:
+        from ..cluster.safe_labels import compute_safe_keyword_label
+
         gid = str(args.get("group_id") or "")
         g = store.get_group(gid)
         if g is None:
             return _err(f"Unknown group: {gid}")
         member_ids = store.list_group_members(gid)
-        # MCP only exposes indexed members.
         if member_ids:
             placeholders = ",".join("?" for _ in member_ids)
             rows = store.conn.execute(
@@ -187,7 +202,16 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             visible = [{"conversation_id": r["conversation_id"], "title": r["title"]} for r in rows]
         else:
             visible = []
-        return _ok({"group": dict(g), "indexed_members": visible})
+        safe_label = compute_safe_keyword_label(store, gid)
+        return _ok({
+            "group": {
+                "group_id": g["group_id"],
+                "level": g["level"],
+                "member_count": g["member_count"],
+                "label": safe_label,
+            },
+            "indexed_members": visible,
+        })
 
     def t_inspect_conversation_storage(args: dict) -> dict:
         """Audit hook: what does the system store about this conversation?

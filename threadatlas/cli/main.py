@@ -168,13 +168,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # --- LLM features ---
     s = sub.add_parser(
         "summarize",
-        help="Generate topical summaries via the configured local LLM",
+        help="Generate topical summaries via the configured local LLM (resumable)",
     )
     s.add_argument("vault", type=Path)
     s.add_argument("--conversation-id", default=None,
                    help="If set, summarize only this conversation")
     s.add_argument("--limit", type=int, default=None,
                    help="Max conversations to summarize in this run")
+    s.add_argument("--force", action="store_true",
+                   help="Re-summarize even conversations that already have an LLM summary")
     s.set_defaults(handler=cmd.cmd_summarize)
 
     s = sub.add_parser(
@@ -184,6 +186,37 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("vault", type=Path)
     s.add_argument("--conversation-id", default=None)
     s.set_defaults(handler=cmd.cmd_llm_chunk)
+
+    # --- operator hygiene ---
+    s = sub.add_parser("check", help="Vault health check: normalized files, FTS sync, leaks, orphans")
+    s.add_argument("vault", type=Path)
+    s.set_defaults(handler=cmd.cmd_check)
+
+    s = sub.add_parser(
+        "rebuild-from-normalized",
+        help="Disaster recovery: rebuild DB from vault/normalized/ JSON files",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    s.set_defaults(handler=cmd.cmd_rebuild_from_normalized)
+
+    s = sub.add_parser("report", help="Generate a static HTML report (no server; just a file)")
+    s.add_argument("vault", type=Path)
+    s.add_argument("--out", type=Path, default=None,
+                   help="Output path (default: vault/reports/report_<ts>.html)")
+    s.set_defaults(handler=cmd.cmd_report)
+
+    s = sub.add_parser("tag", help="Add one or more manual tags to a conversation")
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_id")
+    s.add_argument("tags", nargs="+")
+    s.set_defaults(handler=cmd.cmd_tag)
+
+    s = sub.add_parser("untag", help="Remove one or more manual tags from a conversation")
+    s.add_argument("vault", type=Path)
+    s.add_argument("conversation_id")
+    s.add_argument("tags", nargs="+")
+    s.set_defaults(handler=cmd.cmd_untag)
 
     return p
 

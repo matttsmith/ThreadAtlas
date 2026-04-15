@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .models import State
 from .vault import Vault
-from ..store import Store, transaction, delete_normalized
+from ..store import Store, transaction, delete_normalized, write_normalized
 
 
 # Allowed state transitions. A small whitelist is easier to audit than letting
@@ -44,8 +44,15 @@ _ALLOWED_TRANSITIONS: dict[str, set[str]] = {
 }
 
 
-def transition_state(store: Store, conversation_id: str, target: str) -> str:
+def transition_state(
+    store: Store, conversation_id: str, target: str, *, vault: Vault | None = None
+) -> str:
     """Move a conversation's state. Returns the new state.
+
+    If ``vault`` is provided, the normalized JSON file on disk is rewritten
+    so the recoverable source of truth keeps the new state. Callers that
+    don't have the vault can omit it, but then a later rebuild-from-normalized
+    will restore the pre-transition state.
 
     Does NOT physically delete; for ``deleted`` use :func:`hard_delete`.
     """
@@ -68,6 +75,12 @@ def transition_state(store: Store, conversation_id: str, target: str) -> str:
             _strip_derivatives(store, conversation_id)
         else:
             store.reindex_conversation_fts(conversation_id)
+    # Persist the new state to the normalized JSON file so rebuild-from-
+    # normalized sees the current state, not the state at import time.
+    if vault is not None:
+        updated = store.get_conversation(conversation_id)
+        msgs = store.list_messages(conversation_id)
+        write_normalized(vault, updated, msgs)
     return target
 
 

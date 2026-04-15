@@ -39,6 +39,8 @@ def audit_conversation(vault: Vault, store: Store, conversation_id: str) -> dict
 
     normalized_path = vault.normalized_path_for(conversation_id)
 
+    group_memberships = store.list_group_memberships_for_conversation(conversation_id)
+
     return {
         "conversation_id": c.conversation_id,
         "source": c.source,
@@ -55,6 +57,15 @@ def audit_conversation(vault: Vault, store: Store, conversation_id: str) -> dict
         "importance_score": c.importance_score,
         "resurfacing_score": c.resurfacing_score,
         "has_open_loops": c.has_open_loops,
+        "group_memberships": [
+            {
+                "group_id": m["group_id"],
+                "level": m["level"],
+                "keyword_label": m["keyword_label"],
+                "llm_label": m["llm_label"],
+            }
+            for m in group_memberships
+        ],
         "counts": {
             "messages": len(msgs),
             "chunks": len(chunks),

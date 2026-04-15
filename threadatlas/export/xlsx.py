@@ -47,13 +47,13 @@ PROFILES: dict[str, _Profile] = {
     "project_workbook": _Profile(
         name="project_workbook",
         description="Indexed-only conversations + chunks + projects + open loops + decisions.",
-        sheets=("conversations", "chunks", "projects", "decisions", "open_loops", "entities", "provenance"),
+        sheets=("conversations", "chunks", "projects", "decisions", "open_loops", "entities", "groups", "provenance"),
         include_states=(State.INDEXED.value,),
     ),
     "full_analysis": _Profile(
         name="full_analysis",
         description="Everything that exists, except quarantined content (which has no derivatives).",
-        sheets=("conversations", "chunks", "projects", "decisions", "open_loops", "entities", "preferences", "artifacts", "provenance"),
+        sheets=("conversations", "chunks", "projects", "decisions", "open_loops", "entities", "preferences", "artifacts", "groups", "provenance"),
         include_states=(State.PENDING_REVIEW.value, State.INDEXED.value, State.PRIVATE.value, State.QUARANTINED.value),
     ),
 }
@@ -284,6 +284,30 @@ def _build_provenance(ws, store: Store, states: tuple[str, ...]) -> None:
         ])
 
 
+def _build_groups(ws, store: Store, states: tuple[str, ...]) -> None:
+    cols = [
+        "group_id", "level", "keyword_label", "llm_label", "member_count",
+        "member_ids",
+    ]
+    _write_header(ws, cols)
+    rows = store.conn.execute(
+        """
+        SELECT g.group_id, g.level, g.keyword_label, g.llm_label, g.member_count,
+               GROUP_CONCAT(m.conversation_id, ',') AS member_ids
+          FROM conversation_groups g
+          LEFT JOIN conversation_group_memberships m ON m.group_id = g.group_id
+         GROUP BY g.group_id
+         ORDER BY g.level, g.member_count DESC
+        """
+    ).fetchall()
+    for r in rows:
+        ws.append([
+            r["group_id"], r["level"],
+            r["keyword_label"] or "", r["llm_label"] or "",
+            r["member_count"], r["member_ids"] or "",
+        ])
+
+
 _SHEET_BUILDERS = {
     "conversations": _build_conversations,
     "chunks": _build_chunks,
@@ -293,5 +317,6 @@ _SHEET_BUILDERS = {
     "entities": _build_entities,
     "preferences": _build_preferences,
     "artifacts": _build_artifacts,
+    "groups": _build_groups,
     "provenance": _build_provenance,
 }
