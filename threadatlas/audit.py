@@ -9,11 +9,9 @@ All functions return plain dicts/lists suitable for JSON output.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-
 from .core.models import MCP_VISIBLE_STATES
 from .core.vault import Vault
-from .store import Store, read_normalized
+from .store import Store
 
 
 def audit_conversation(vault: Vault, store: Store, conversation_id: str) -> dict | None:

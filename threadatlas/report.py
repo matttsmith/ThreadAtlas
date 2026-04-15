@@ -20,13 +20,10 @@ Sections:
 from __future__ import annotations
 
 import html
-import json
 import time
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .core.models import MCP_VISIBLE_STATES, State
 from .core.vault import Vault
 from .store import Store
 

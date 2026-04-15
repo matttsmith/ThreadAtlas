@@ -5,19 +5,14 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .. import health, recovery, report as report_mod
 from ..audit import audit_conversation, audit_object, plan_hard_delete
 from ..cluster import regroup_all
-from ..core.models import (
-    EXTRACTABLE_STATES,
-    MCP_VISIBLE_STATES,
-    State,
-)
+from ..core.models import MCP_VISIBLE_STATES, State
 from ..core.vault import init_vault, open_vault
 from ..core.workflow import hard_delete, transition_state
-from ..export import PROFILES, export_workbook, list_profiles
+from ..export import export_workbook, list_profiles
 from ..extract import (
     chunk_all_eligible,
     chunk_conversation,
@@ -31,8 +26,6 @@ from ..llm.label_groups import label_all_groups
 from ..llm.summarize import summarize_all_eligible, summarize_conversation
 from ..mcp import serve as mcp_serve
 from ..search import (
-    list_decisions,
-    list_open_loops,
     project_view,
     search_chunks,
     search_conversations,

@@ -31,7 +31,7 @@ from pathlib import Path
 from .core.models import Conversation, Message, State
 from .core.vault import Vault
 from .extract import chunk_conversation, extract_for_conversation
-from .store import Store, open_store
+from .store import open_store
 
 
 @dataclass

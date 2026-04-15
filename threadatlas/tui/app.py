@@ -22,8 +22,6 @@ prompt to resize.
 from __future__ import annotations
 
 import curses
-import json
-from pathlib import Path
 
 from ..core.vault import Vault, open_vault
 from ..store import Store, open_store
@@ -399,14 +397,8 @@ def _main(stdscr, vault: Vault, store: Store) -> None:
         body_height = max(body_bottom - body_top, 1)
         content_width = w
 
-        # Header.
-        nav = "  ".join(
-            (v if i != app.screen_idx or app.override_model is not None else f"[{v}]")
-            for i, v in enumerate(_SCREEN_LABELS[k] for k in _SCREEN_ORDER)
-            for k in [None]
-        )
-        # The above is a hack; build the header more directly:
-        header_parts = []
+        # Header: highlight current screen in brackets when not in a drill-down.
+        header_parts: list[str] = []
         for i, k in enumerate(_SCREEN_ORDER):
             label = _SCREEN_LABELS[k]
             if app.override_model is None and i == app.screen_idx:

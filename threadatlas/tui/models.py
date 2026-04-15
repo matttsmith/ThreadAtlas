@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from ..core.models import MCP_VISIBLE_STATES, State
+from ..core.models import State
 from ..core.vault import Vault
 from ..store import Store
 

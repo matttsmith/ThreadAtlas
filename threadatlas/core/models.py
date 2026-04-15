@@ -99,6 +99,9 @@ class Conversation:
     message_count: int = 0
     summary_short: str = ""
     summary_long: str | None = None
+    # Provenance of the summary: "deterministic" (default) or "llm". Lets
+    # operators filter or re-run summarization selectively.
+    summary_source: str = "deterministic"
     manual_tags: list[str] = field(default_factory=list)
     auto_tags: list[str] = field(default_factory=list)
     primary_project_id: str | None = None

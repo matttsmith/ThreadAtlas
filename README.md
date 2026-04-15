@@ -1,93 +1,318 @@
 # ThreadAtlas
 
-A fully local, deletion-aware conversation intelligence layer for ChatGPT and
-Claude exports.
+**Fully local conversation intelligence for your ChatGPT and Claude export
+archives.** Ingest, review, search, cluster, and export your AI chat history
+without a single outbound network request.
 
-ThreadAtlas ingests AI conversation exports into a local vault, lets you review
-and partition them by sensitivity, supports keyword search, splits long threads
-into thematic chunks, extracts a small set of high-value derived objects
-(projects, people, decisions, open loops, artifacts, preferences), and exposes
-the approved subset to Claude via a local stdio MCP server. It also ships
-spreadsheet-quality XLSX export for manual triage.
+![tests](https://github.com/matttsmith/threadatlas/actions/workflows/test.yml/badge.svg)
 
-It is a single-user local utility. There is no cloud backend, no telemetry, and
-no outbound network access at runtime.
+---
+
+## What it is
+
+ThreadAtlas turns your exported AI chats into a searchable, trustworthy local
+knowledge base. It:
+
+- **Ingests** ChatGPT and Claude exports (zip, directory, or raw
+  `conversations.json`), with a modular parser registry for new sources.
+- **Partitions** conversations by sensitivity via an explicit review
+  workflow: `pending_review`, `indexed`, `private`, `quarantined`, or hard
+  `deleted`.
+- **Searches** locally with SQLite FTS5 over titles, summaries, messages,
+  and chunks; CLI + MCP surfaces respect the visibility rules.
+- **Chunks** long threads into thematic segments using a deterministic
+  heuristic, optionally refined by a local LLM (merge-only; the LLM can
+  never introduce new splits).
+- **Extracts** a small, inspectable set of derived objects — projects,
+  entities, decisions, open loops, artifacts, preferences — each with
+  provenance excerpts.
+- **Clusters** your corpus into coarse + fine thematic groups via
+  pure-Python TF-IDF + k-means, with optional local-LLM naming.
+- **Summarizes** conversations via an optional local LLM subprocess.
+- **Exports** polished XLSX workbooks for manual triage.
+- **Exposes** an audit surface over stdio MCP so Claude can reason across
+  your approved corpus — and *only* the approved corpus.
+- **Provides** an interactive ASCII TUI dashboard (stdlib curses) and a
+  static HTML report for visual overview.
+
+---
+
+## Core principles
+
+| Principle | What it means in practice |
+|---|---|
+| **Fully local** | No outbound network. A static test fails the build if any networking import lands in the runtime package. |
+| **Review before exposure** | Every new import lands in `pending_review`. Nothing is MCP-visible or synthesized until you explicitly approve it. |
+| **Privacy boundaries are product boundaries** | `private` content is locally searchable but hidden from MCP and from global synthesis. `quarantined` is stored raw with all derivative surfaces stripped. |
+| **Hard delete is real** | `threadatlas delete` removes messages, chunks, FTS rows, derivative objects whose only provenance was this conversation, and the normalized JSON file. `VACUUM`'d after. |
+| **Deterministic by default** | TF-IDF + k-means are fixed-seed. Extraction heuristics are inspectable regexes. The LLM is optional. |
+| **Boring, auditable CLI** | Mutations need confirmation (`--yes` to bypass). The TUI is read-only. |
+| **Spreadsheet is a first-class interface** | Workbook profiles are stable, sortable, filterable; column schemas are locked down by tests. |
+
+ThreadAtlas is designed for a single technically-sophisticated user on their
+own machine. It is **not** a SaaS, a server, a team product, or a
+replacement for AI chat itself.
+
+---
 
 ## Install
 
+Python ≥ 3.10. Only runtime dependency is `openpyxl` (XLSX). The rest is
+standard library.
+
 ```
-pip install -e .
+git clone https://github.com/matttsmith/threadatlas
+cd threadatlas
+pip install -e ".[dev]"
 ```
 
-This installs the `threadatlas` CLI. The only runtime dependency is
-`openpyxl` (XLSX writing). The rest of the implementation is standard library
-only. Optional local model integration is not bundled.
+On macOS, `curses` is built into Python. On Windows, install
+`windows-curses` if you want the TUI.
+
+---
 
 ## Quick start
 
-```
-# 1. Initialize a vault
+```bash
+# 1. Create a vault.
 threadatlas init ./vault
 
-# 2. Import a ChatGPT export (zip or directory or conversations.json)
-threadatlas import ./vault chatgpt-export.zip --source chatgpt
+# 2. Import exports (ChatGPT or Claude, zip / dir / conversations.json).
+threadatlas import ./vault ~/Downloads/chatgpt-export.zip --source chatgpt
+threadatlas import ./vault ~/Downloads/claude-export.zip  --source claude
 
-# 3. Import a Claude export
-threadatlas import ./vault claude-export.zip --source claude
-
-# 4. Review what landed in pending_review
+# 3. Review what landed in pending_review.
 threadatlas review ./vault
+threadatlas tui ./vault                    # interactive ASCII dashboard
 
-# 5. Approve, quarantine, mark private, or delete
-threadatlas approve ./vault <conversation_id>
-threadatlas quarantine ./vault <conversation_id>
-threadatlas private ./vault <conversation_id>
-threadatlas delete ./vault <conversation_id>
+# 4. Decide what to approve, keep private, quarantine, or delete.
+threadatlas approve    ./vault <conv_id>   # becomes MCP-visible
+threadatlas private    ./vault <conv_id>   # CLI-only, hidden from MCP
+threadatlas quarantine ./vault <conv_id>   # normalized only, no derivatives
+threadatlas delete     ./vault <conv_id>   # hard delete (confirmation required)
 
-# 6. Build chunks and run heuristic extraction (no network, no LLM required)
-threadatlas chunk ./vault
-threadatlas extract ./vault
+# 5. Build chunks + derived objects + thematic groups.
+threadatlas process-approved ./vault       # chunk + extract in one go
+threadatlas group ./vault                  # broad (10) + fine (100) clusters
 
-# 7. Search
-threadatlas search ./vault "project chs decision"
+# 6. Search.
+threadatlas search ./vault "CHS staffing"
+threadatlas search ./vault "therapy" --include-private
 
-# 8. Export to XLSX
-threadatlas export ./vault --profile review_workbook --out ./vault/exports/review.xlsx
+# 7. Export.
+threadatlas export ./vault --profile review_workbook
+threadatlas export ./vault --profile project_workbook
+threadatlas report ./vault                 # static HTML dashboard
 
-# 9. Inspect a single conversation end to end
-threadatlas inspect ./vault <conversation_id>
+# 8. Let Claude query your approved corpus.
+threadatlas mcp ./vault                    # stdio MCP server
 
-# 10. Run the local MCP server (stdio)
-threadatlas mcp ./vault
+# 9. Operator hygiene.
+threadatlas check ./vault                  # vault health invariants
+threadatlas audit-conversation ./vault <conv_id>
+threadatlas rebuild-from-normalized ./vault
 ```
 
-## Vault layout
+Full CLI reference: `threadatlas --help` and `threadatlas <cmd> --help`.
+
+---
+
+## Optional: local LLM integration
+
+ThreadAtlas never connects to the internet. If you want higher-quality
+summaries, prose group names, or LLM-assisted chunk refinement, install a
+local model and point ThreadAtlas at it via a **stdio subprocess**.
+
+Create `<vault>/local_llm.json`:
+
+```json
+{
+  "command": [
+    "/usr/local/bin/llama-cli",
+    "-m", "/path/to/qwen2.5-3b-instruct-q4.gguf",
+    "--prompt-file", "{PROMPT_FILE}",
+    "--no-conversation",
+    "--temp", "0.1",
+    "--n-predict", "256"
+  ],
+  "timeout_seconds": 120,
+  "max_prompt_chars": 12000,
+  "max_response_chars": 4000,
+  "used_for": ["summaries", "group_naming", "chunk_gating"],
+  "dry_run": false
+}
+```
+
+Then:
+
+```bash
+threadatlas summarize ./vault                    # 2-3 sentence summaries
+threadatlas group ./vault --llm-names            # prose cluster names
+threadatlas llm-chunk ./vault                    # refine chunk boundaries
+```
+
+Safeguards:
+
+- **`used_for` is a whitelist.** A task not listed is refused. Default is
+  LLM fully disabled.
+- **Per-call timeout + prompt/response size caps.**
+- **Every call logged to `vault/logs/llm_calls.jsonl` — metadata only, no
+  prompt or response content.**
+- **`dry_run: true`** makes every call print the prompt locally and skip
+  the subprocess. Use this to audit exactly what would be sent.
+- **Chunk boundary gate can only merge**, never introduce new splits. If
+  the LLM fails or returns malformed JSON, the deterministic boundary is
+  preserved.
+
+A 3B-class quantized Qwen or Llama model on an M-series Mac runs the
+summarization workflow comfortably.
+
+---
+
+## Architecture
 
 ```
-vault/
-  raw_imports/    # original user-provided export files
-  normalized/     # canonical normalized conversation JSON
-  db/             # SQLite database + indexes
-  exports/        # generated XLSX
-  cache/          # ephemeral, safe to rebuild
-  logs/           # local operational logs
+threadatlas/
+  core/        domain models, vault layout, state machine, deletion cascade
+  ingest/      parser registry (ChatGPT + Claude) + import pipeline
+  store/       SQLite + FTS5 schema + normalized JSON IO
+  extract/     deterministic chunking + heuristic derived objects
+  search/      keyword search + project synthesis + timeline
+  cluster/     TF-IDF + k-means grouping (stdlib, deterministic)
+  llm/         optional local-LLM subprocess: runner, prompts, tasks
+  export/      XLSX workbook profiles
+  mcp/         stdio JSON-RPC server (read-only, indexed-only)
+  tui/         curses dashboard (read-only, responsive)
+  cli/         argparse entry points
+  audit.py     operator audit/inspection helpers
+  health.py    vault invariant checker
+  recovery.py  disaster recovery from normalized JSON
+  report.py    static HTML report
 ```
 
-## Visibility states
+The **normalized JSON files** in `vault/normalized/` are the recoverable
+source of truth; SQLite is the index over them. You can lose or delete
+the DB and rebuild it with `threadatlas rebuild-from-normalized`.
 
-- `pending_review` - just imported, not searchable by MCP, not in synthesis
-- `indexed` - searchable, eligible for synthesis, MCP-visible
-- `private` - locally searchable in the CLI but hidden from MCP and global synthesis
-- `quarantined` - normalized only, no embeddings/extraction, hidden from MCP
-- `deleted` - physically removed (CLI command performs hard delete)
+---
 
-## Privacy guarantees
+## Visibility matrix
 
-ThreadAtlas does not import any HTTP or networking client in its runtime code
-paths. A regression test (`tests/test_no_network.py`) statically scans the
-package source for forbidden imports.
+| Surface | pending_review | indexed | private | quarantined |
+|---|---|---|---|---|
+| CLI `search` (default) | ❌ | ✅ | ❌ | ❌ |
+| CLI `search --include-private` | ❌ | ✅ | ✅ | ❌ |
+| MCP (all tools) | ❌ | ✅ | ❌ | ❌ |
+| Project synthesis | ❌ | ✅ | ❌ | ❌ |
+| Chunks + extraction | ❌ | ✅ | ✅ | ❌ |
+| FTS rows exist | ❌ | ✅ | ✅ | ❌ |
+| Normalized JSON on disk | ✅ | ✅ | ✅ | ✅ |
+| Grouping participation | ❌ | ✅ | ✅ | ❌ |
+| MCP group labels derived from | — | ✅ only | ❌ | — |
 
-If you opt into local embeddings or a local LLM later, you must install and
-configure them manually. ThreadAtlas will never download a model.
+Group labels shown over MCP are **recomputed** from only the indexed
+members of a group so private content cannot leak into a label that
+Claude sees.
 
-See `docs/spec.md` for the full design spec.
+---
+
+## Hard delete semantics
+
+`threadatlas delete <vault> <conv_id>` physically removes:
+
+- the conversation row and all its messages (FK cascade)
+- all chunks
+- all FTS5 rows
+- every provenance link pointing at the conversation
+- derived objects whose **only** provenance was this conversation
+- the normalized JSON file on disk
+- then runs `VACUUM` to release pages
+
+Derived objects referenced by *other* conversations survive, with only
+this conversation's contribution removed. Exports and reports are
+generated on demand from the current DB, so next run no longer reflects
+deleted content.
+
+---
+
+## Tests and CI
+
+The suite has ~157 tests covering parsing, state transitions, visibility
+boundaries, hard-delete cascade, chunking, heuristic extraction, search
+ranking, XLSX schema stability, MCP tool behavior, LLM subprocess runner,
+TF-IDF + k-means determinism, full LLM pipeline integration against a
+smart fake, and a static no-network enforcement check.
+
+```
+pytest -q
+```
+
+CI runs the suite on Python 3.10, 3.11, and 3.12 on every push and PR.
+A separate job runs only `tests/test_no_network.py` so the privacy
+invariant is surfaced independently of general regressions.
+
+### Running pipeline tests against a real local model
+
+```bash
+export THREADATLAS_REAL_LLM_ARGV='["/usr/local/bin/llama-cli",
+    "-m", "/path/to/model.gguf",
+    "--prompt-file", "{PROMPT_FILE}",
+    "--no-conversation", "--temp", "0.1", "--n-predict", "256"]'
+export THREADATLAS_REAL_LLM_TIMEOUT=120
+pytest tests/test_llm_pipeline_integration.py -q
+```
+
+The assertions are lenient enough for a well-behaved 3B-class local model.
+If your model fails them, that's a signal about the model.
+
+---
+
+## What ThreadAtlas does NOT do
+
+- Talk to the internet. There is no optional connected mode.
+- Send anything to a cloud API (OpenAI, Anthropic, Gemini). None.
+- Auto-download models or embeddings.
+- Run a background daemon, file watcher, or server.
+- Expose a localhost HTTP dashboard (would add CSRF/XSS surface;
+  static HTML report covers visual overview without a TCP listener).
+- Auto-merge derived objects or projects (`obj-merge` is operator-driven).
+- Import from email, Drive, Slack, or anything non-AI-chat.
+- Sync between machines. Files on disk are the source of truth.
+
+---
+
+## Adapting or extending
+
+**Add a new source parser** (e.g. Gemini exports): drop a new module in
+`threadatlas/ingest/`, subclass `Parser`, implement `can_handle(path)` and
+`iter_conversations(path)`, call `registry.register(MyParser())`. No
+other layer needs changing — import pipeline, store, search, MCP, XLSX
+all operate on the canonical `ParsedConversation`/`Conversation`/`Message`
+shape.
+
+**Add a derived-object kind**: add to `DerivedKind`, add a harvester in
+`extract/heuristics.py`, add an XLSX sheet builder and a test. Keep the
+precision bar high.
+
+**Tweak the LLM prompts**: `threadatlas/llm/prompts.py`. Every prompt is
+in one file for audit. Use the `dry_run: true` config to preview without
+sending.
+
+---
+
+## License
+
+See [LICENSE](LICENSE).
+
+---
+
+## Non-goals for v1.x
+
+- Team / multi-user support
+- Mobile / browser extensions
+- Cloud backend, sync, or hosted search
+- Live integrations with ChatGPT or Claude services
+- Autonomous agent actions that modify the corpus without explicit user request
+
+This is a personal local tool. If it ever stops feeling that way, file an
+issue.

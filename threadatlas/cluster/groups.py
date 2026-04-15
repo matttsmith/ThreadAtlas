@@ -14,7 +14,7 @@ labels.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..core.models import EXTRACTABLE_STATES, new_id
 from ..store import Store
@@ -52,30 +52,6 @@ def _document_for(conv) -> str:
     if conv.summary_long:
         parts.append(conv.summary_long)
     return "\n".join(parts)
-
-
-def _top_members_by_similarity(
-    vectors: list[dict[str, float]],
-    assignments: list[int],
-    centroids: list[dict[str, float]],
-    group_index: int,
-    conversation_ids: list[str],
-    top_n: int,
-) -> list[str]:
-    """Return conversation_ids of the top-N members in ``group_index`` by
-    cosine similarity to that centroid.
-
-    Used by downstream LLM naming: we want the *most representative* members
-    to describe the cluster.
-    """
-    members: list[tuple[float, str]] = []
-    for i, a in enumerate(assignments):
-        if a != group_index:
-            continue
-        sim = cosine_similarity(vectors[i], centroids[group_index])
-        members.append((sim, conversation_ids[i]))
-    members.sort(reverse=True)
-    return [cid for _, cid in members[:top_n]]
 
 
 def _format_keyword_label(terms: list[str]) -> str:

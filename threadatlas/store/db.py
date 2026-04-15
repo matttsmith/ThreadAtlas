@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,8 +28,6 @@ from ..core.models import (
     FTS_INDEXED_STATES,
     Message,
     ProvenanceLink,
-    State,
-    new_id,
 )
 from ..core.vault import Vault
 
@@ -680,6 +677,7 @@ def _row_to_conversation(row) -> Conversation:
         message_count=row["message_count"],
         summary_short=row["summary_short"] or "",
         summary_long=row["summary_long"],
+        summary_source=row["summary_source"] if "summary_source" in row.keys() else "deterministic",
         manual_tags=json.loads(row["manual_tags"] or "[]"),
         auto_tags=json.loads(row["auto_tags"] or "[]"),
         primary_project_id=row["primary_project_id"],

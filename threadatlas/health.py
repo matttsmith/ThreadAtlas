@@ -19,7 +19,6 @@ Invariants checked:
 
 from __future__ import annotations
 
-from .core.models import FTS_INDEXED_STATES
 from .core.vault import Vault
 from .store import Store
 
