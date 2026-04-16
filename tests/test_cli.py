@@ -88,3 +88,24 @@ def test_delete_requires_confirmation(tmp_path: Path, chatgpt_export_factory, mo
     rc, out = _run(["delete", str(vault), cid])
     assert rc == 1
     assert "Aborted" in out
+
+
+def test_llm_check_subprocess_valid(tmp_path: Path):
+    """llm-check with a valid subprocess config (using /bin/echo as stand-in)."""
+    import sys
+    vault = tmp_path / "vault"
+    _run(["init", str(vault)])
+    (vault / "local_llm.json").write_text(json.dumps({
+        "command": [sys.executable, "-c", "print('hi')"],
+        "used_for": ["summaries"],
+    }), encoding="utf-8")
+    rc, out = _run(["llm-check", str(vault)])
+    assert rc == 0
+    assert "valid" in out.lower()
+
+
+def test_llm_check_no_config(tmp_path: Path):
+    vault = tmp_path / "vault"
+    _run(["init", str(vault)])
+    rc, out = _run(["llm-check", str(vault)])
+    assert rc == 1
