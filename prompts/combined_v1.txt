@@ -6,10 +6,44 @@ Do TWO things in one response:
 1. CLASSIFY each message's register and reality_mode.
 2. EXTRACT structured data from the conversation.
 
-REGISTER values: work | research | career_logistics | creative_writing | roleplay | jailbreak_experiment | puzzle_hobby | personal | other
-REALITY_MODE values: literal | fictional | hypothetical
+REGISTER values (pick exactly one per message):
+- work: professional tasks, coding, engineering, business operations
+- research: learning, academic inquiry, fact-finding
+- career_logistics: job search, resume, interviews, career planning
+- creative_writing: user asked the AI to write fiction, poetry, scripts
+- roleplay: user and AI are acting as characters in a scenario
+- jailbreak_experiment: user is testing AI limits, prompt injection, bypasses
+- puzzle_hobby: games, riddles, trivia, recreational problem-solving
+- personal: health, relationships, life advice, therapy-adjacent
+- other: does not fit any of the above
 
-CRITICAL: Only extract decisions and open_loops from user messages where reality_mode is "literal". Do not extract roleplay dialogue as real decisions.
+REALITY_MODE values (pick exactly one per message):
+- literal: the speaker means what they say directly
+- fictional: the speaker is writing or performing as a character
+- hypothetical: the speaker is exploring a what-if scenario
+
+CRITICAL DISTINCTIONS:
+- "Write a story where a villain says 'I will destroy everything'" -> register=creative_writing, reality_mode=literal (the USER is literally requesting creative output)
+- "I am the Dark Lord!" in a roleplay -> register=roleplay, reality_mode=fictional
+- "I decided to use Kubernetes" -> register=work, reality_mode=literal
+- "What if we used Rust instead?" -> register=work, reality_mode=hypothetical
+
+EXTRACTION RULES:
+- A "project" is a named, ongoing effort the user iterates on across sessions. One-off questions are NOT projects.
+- A "decision" is a commitment the USER makes. Assistant suggestions are NOT decisions unless the user explicitly confirms.
+- An "open_loop" is an unresolved task or question the USER explicitly raises. Not every question is an open loop — only genuine pending work.
+- Only extract projects, decisions, and open_loops from messages where reality_mode is "literal" and role is "user".
+- Do NOT extract roleplay dialogue, fictional character commitments, or assistant-side suggestions as decisions or open loops.
+
+ENTITY TYPES:
+- person: a real individual
+- organization: a company, team, institution
+- concept: an idea, methodology, technology
+- artifact: a document, codebase, product, tool
+- place: a physical or virtual location
+- glitch_token: a known AI glitch token (e.g., SolidGoldMagikarp, Peter Todd as token)
+- fictional_character: a character from fiction, roleplay, or creative writing
+- other: none of the above
 
 Conversation title: <<TITLE>>
 Created: <<CREATED>> | Updated: <<UPDATED>>
@@ -20,17 +54,17 @@ Messages:
 Return exactly one JSON object:
 {
   "classifications": [{"register": "...", "reality_mode": "..."}, ...],
-  "summary": "<2-3 sentence summary>",
+  "summary": "<2-3 sentence summary of what the USER was working on or asking about. Be concrete and topical. Do not start with 'This conversation' or 'The user'.>",
   "projects": [{"title": "...", "description": "...", "status": "active|dormant|completed"}],
-  "decisions": [{"verbatim": "<exact user sentence>", "paraphrase": "<rephrasing>"}],
-  "open_loops": [{"verbatim": "<exact user sentence>", "paraphrase": "<rephrasing>"}],
-  "entities": [{"name": "...", "type": "person|organization|concept|artifact|place|glitch_token|fictional_character|other", "gloss": "<one-line description>"}]
+  "decisions": [{"verbatim": "<exact user sentence>", "paraphrase": "<LLM rephrasing>"}],
+  "open_loops": [{"verbatim": "<exact user sentence>", "paraphrase": "<LLM rephrasing>"}],
+  "entities": [{"name": "...", "type": "person|organization|concept|artifact|place|glitch_token|fictional_character|other", "gloss": "<one-line disambiguating description>"}]
 }
 
 Rules:
-- classifications array must have one entry per message, in order.
-- Empty arrays for categories with no items.
-- Only include genuine user commitments as decisions, not assistant suggestions.
-- Keep summary concrete and topical.
+- The classifications array must have one entry per message above, in order.
+- Use empty arrays [] for categories with no items. Most conversations will have empty projects and open_loops — that is normal.
+- For entities, always include a disambiguating gloss (e.g., "Redis (in-memory data store)" not just "Redis").
+- Keep the summary concrete: mention specific topics, tools, or goals.
 
 Your JSON:
