@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, IO
 
 from .. import __version__ as TA_VERSION
-from ..core.models import MCP_VISIBLE_STATES
+from ..core.models import ALL_REGISTERS, DEFAULT_REGISTER_EXCLUDES, MCP_VISIBLE_STATES
 from ..core.vault import Vault, open_vault
 from ..search import (
     list_decisions,
@@ -41,6 +41,48 @@ from . import writes as writes_mod
 
 
 PROTOCOL_VERSION = "2024-11-05"
+
+
+def _parse_date_param(val: str | None) -> float | None:
+    """Parse ISO date string to POSIX timestamp."""
+    if not val:
+        return None
+    from datetime import datetime, timezone
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(val, fmt).replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_register_param(val) -> list[str] | None:
+    """Parse register filter: list of strings or None."""
+    if val is None:
+        return None
+    if isinstance(val, list):
+        return [r for r in val if r in ALL_REGISTERS]
+    if isinstance(val, str):
+        return [val] if val in ALL_REGISTERS else None
+    return None
+
+
+# Common filter schema properties for tool definitions.
+_FILTER_PROPERTIES = {
+    "after": {"type": "string", "description": "ISO date (YYYY-MM-DD). Only include items after this date."},
+    "before": {"type": "string", "description": "ISO date (YYYY-MM-DD). Only include items before this date."},
+    "register": {
+        "type": "array",
+        "items": {"type": "string", "enum": list(ALL_REGISTERS)},
+        "description": "Filter by conversation register. Default excludes roleplay and jailbreak_experiment.",
+    },
+    "source": {
+        "type": "string",
+        "enum": ["chatgpt", "claude", "all"],
+        "description": "Filter by conversation source. Default: all.",
+    },
+}
 
 
 @dataclass
@@ -70,16 +112,27 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
     """Construct the (read-mostly) tool registry."""
     visible = tuple(MCP_VISIBLE_STATES)
 
+    def _common_filters(args: dict) -> dict:
+        """Extract common filter parameters."""
+        return {
+            "after": _parse_date_param(args.get("after")),
+            "before": _parse_date_param(args.get("before")),
+            "register": _parse_register_param(args.get("register")),
+            "source_filter": args.get("source") if args.get("source") != "all" else None,
+        }
+
     def t_search_conversations(args: dict) -> dict:
         q = str(args.get("query") or "")
         limit = int(args.get("limit") or 25)
-        hits = search_conversations(store, q, visible_states=visible, limit=limit)
+        filters = _common_filters(args)
+        hits = search_conversations(store, q, visible_states=visible, limit=limit, **filters)
         return _ok([h.__dict__ for h in hits])
 
     def t_search_chunks(args: dict) -> dict:
         q = str(args.get("query") or "")
         limit = int(args.get("limit") or 25)
-        hits = search_chunks(store, q, visible_states=visible, limit=limit)
+        filters = _common_filters(args)
+        hits = search_chunks(store, q, visible_states=visible, limit=limit, **filters)
         return _ok([h.__dict__ for h in hits])
 
     def t_get_conversation_summary(args: dict) -> dict:
@@ -87,12 +140,18 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         c = store.get_conversation(cid)
         if c is None or c.state not in MCP_VISIBLE_STATES:
             return _err(f"Conversation not visible: {cid}")
+        # Include LLM summary if available.
+        llm_meta = store.get_conversation_llm_meta(cid)
+        llm_summary = llm_meta.llm_summary if llm_meta else None
+        dominant_register = llm_meta.dominant_register if llm_meta else None
         return _ok({
             "conversation_id": c.conversation_id,
             "source": c.source,
             "title": c.title,
             "summary_short": c.summary_short,
             "summary_long": c.summary_long,
+            "llm_summary": llm_summary,
+            "dominant_register": dominant_register,
             "message_count": c.message_count,
             "state": c.state,
             "manual_tags": c.manual_tags,
@@ -125,7 +184,9 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         return _ok([ch.__dict__ for ch in chunks])
 
     def t_list_projects(args: dict) -> dict:
-        return _ok(list_projects(store, visible_states=visible, limit=int(args.get("limit") or 200)))
+        filters = _common_filters(args)
+        return _ok(list_projects(store, visible_states=visible,
+                                 limit=int(args.get("limit") or 200), **filters))
 
     def t_get_project(args: dict) -> dict:
         pid = str(args.get("project_id") or "")
@@ -139,13 +200,71 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         return _ok(project_timeline(store, pid, visible_states=visible))
 
     def t_list_open_loops(args: dict) -> dict:
-        return _ok(list_open_loops(store, visible_states=visible, limit=int(args.get("limit") or 200)))
+        filters = _common_filters(args)
+        return _ok(list_open_loops(store, visible_states=visible,
+                                   limit=int(args.get("limit") or 200), **filters))
 
     def t_list_decisions(args: dict) -> dict:
-        return _ok(list_decisions(store, visible_states=visible, limit=int(args.get("limit") or 200)))
+        filters = _common_filters(args)
+        return _ok(list_decisions(store, visible_states=visible,
+                                  limit=int(args.get("limit") or 200), **filters))
 
     def t_list_entities(args: dict) -> dict:
-        return _ok(list_entities(store, visible_states=visible, limit=int(args.get("limit") or 200)))
+        filters = _common_filters(args)
+        return _ok(list_entities(store, visible_states=visible,
+                                 limit=int(args.get("limit") or 200), **filters))
+
+    def t_generate_profile(args: dict) -> dict:
+        """Generate a narrative profile of the indexed user."""
+        focus = args.get("focus")
+        from ..llm.profile import generate_profile
+        result = generate_profile(vault, store, focus=focus, visible_states=visible)
+        return _ok(result)
+
+    def t_find_related(args: dict) -> dict:
+        """Find related conversations by semantic similarity to free-text context."""
+        context = str(args.get("context") or "")
+        limit = int(args.get("limit") or 10)
+        if not context.strip():
+            return _err("context parameter is required")
+        from ..search.embeddings import (
+            bytes_to_embedding,
+            cosine_similarity,
+            fit_embedder_from_corpus,
+        )
+        try:
+            embedder = fit_embedder_from_corpus(store)
+            query_vec = embedder.embed(context)
+            all_embeddings = store.get_all_chunk_embeddings(visible_states=visible)
+            if not all_embeddings:
+                return _ok([])
+
+            # Score each conversation by max chunk similarity.
+            conv_scores: dict[str, float] = {}
+            for chunk_id, conv_id, emb_bytes in all_embeddings:
+                emb_vec = bytes_to_embedding(emb_bytes)
+                sim = cosine_similarity(query_vec, emb_vec)
+                if conv_id not in conv_scores or sim > conv_scores[conv_id]:
+                    conv_scores[conv_id] = sim
+
+            ranked = sorted(conv_scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+            results = []
+            for conv_id, score in ranked:
+                if score < 0.01:
+                    continue
+                conv = store.get_conversation(conv_id)
+                if conv is None:
+                    continue
+                results.append({
+                    "conversation_id": conv_id,
+                    "title": conv.title,
+                    "source": conv.source,
+                    "score": round(score, 4),
+                    "summary_short": conv.summary_short[:240],
+                })
+            return _ok(results)
+        except Exception as e:
+            return _err(f"Semantic search not available: {e}")
 
     def t_list_groups(args: dict) -> dict:
         """MCP-safe group list.
@@ -278,25 +397,30 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             "elapsed_ms": result.elapsed_ms,
         })
 
+    # Build filter properties for reuse across tool schemas.
+    fp = dict(_FILTER_PROPERTIES)
+
     tools = [
         _Tool("query", "Structured query across all indexed material. "
-              "Supports filter prefixes: source:, tag:, kind:, project:, after:, before:, has:. "
-              "Remaining text is used for keyword search. Returns conversations, chunks, and derived objects.",
+              "Supports filter prefixes: source:, tag:, kind:, project:, after:, before:, has:, register:. "
+              "Remaining text is used for hybrid keyword + semantic search. Returns conversations, chunks, and derived objects.",
               {"type": "object",
                "properties": {
                    "query": {"type": "string",
                              "description": "Query string, optionally with filter prefixes "
-                                            "(e.g. 'migration plan source:chatgpt', 'kind:decision after:2024-06-01')"},
+                                            "(e.g. 'migration plan source:chatgpt', 'kind:decision after:2024-06-01', 'register:work')"},
                    "limit": {"type": "integer", "description": "Max results (default 25)"}},
                "required": ["query"]},
               t_query),
-        _Tool("search_conversations", "Keyword search over indexed conversations.",
-              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]},
+        _Tool("search_conversations", "Hybrid keyword + semantic search over indexed conversations. "
+              "Finds both exact keyword matches and semantically similar content.",
+              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, **fp}, "required": ["query"]},
               t_search_conversations),
         _Tool("search_chunks", "Keyword search over chunks of indexed conversations.",
-              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]},
+              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, **fp}, "required": ["query"]},
               t_search_chunks),
-        _Tool("get_conversation_summary", "Get summary metadata for one indexed conversation.",
+        _Tool("get_conversation_summary", "Get LLM-generated summary and metadata for one indexed conversation. "
+              "Includes register classification, importance score, and structured summary.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_get_conversation_summary),
         _Tool("get_conversation_messages", "Get messages for one indexed conversation.",
@@ -305,8 +429,9 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         _Tool("get_conversation_chunks", "Get chunks for one indexed conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_get_conversation_chunks),
-        _Tool("list_projects", "List active projects derived from indexed material.",
-              {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        _Tool("list_projects", "List active projects derived from indexed material. "
+              "By default excludes roleplay and jailbreak content.",
+              {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_projects),
         _Tool("get_project", "Get a project page (linked conversations + decisions + open loops + entities).",
               {"type": "object", "properties": {"project_id": {"type": "string"}}, "required": ["project_id"]},
@@ -314,14 +439,16 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         _Tool("get_project_timeline", "Timeline of conversations linked to a project.",
               {"type": "object", "properties": {"project_id": {"type": "string"}}, "required": ["project_id"]},
               t_get_project_timeline),
-        _Tool("list_open_loops", "List currently open loops across indexed material.",
-              {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        _Tool("list_open_loops", "List currently open loops across indexed material. "
+              "By default excludes roleplay and jailbreak content.",
+              {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_open_loops),
-        _Tool("list_decisions", "List decisions across indexed material.",
-              {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        _Tool("list_decisions", "List decisions across indexed material. "
+              "By default excludes roleplay and jailbreak content.",
+              {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_decisions),
-        _Tool("list_entities", "List recurring entities across indexed material.",
-              {"type": "object", "properties": {"limit": {"type": "integer"}}},
+        _Tool("list_entities", "List recurring entities across indexed material with type disambiguation.",
+              {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_entities),
         _Tool("list_groups", "List thematic conversation groups (broad/fine) with visible (indexed) member counts.",
               {"type": "object", "properties": {"level": {"type": "string", "enum": ["broad", "fine"]}}},
@@ -332,6 +459,22 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         _Tool("inspect_conversation_storage", "Metadata-only audit of what is stored for a conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_inspect_conversation_storage),
+        _Tool("generate_profile", "Generate a narrative profile of the indexed user organized by topic: "
+              "active projects, recent interests, dormant threads, recurring preoccupations, stylistic tendencies. "
+              "Cached with 7-day TTL.",
+              {"type": "object", "properties": {
+                  "focus": {"type": "array", "items": {"type": "string"},
+                            "description": "Optional list of topics to focus the profile on."}}},
+              t_generate_profile),
+        _Tool("find_related", "Find past conversations most relevant to a given context description. "
+              "Uses semantic similarity for proactive surfacing when current work resembles past conversations.",
+              {"type": "object", "properties": {
+                  "context": {"type": "string",
+                              "description": "Free-text description of current context "
+                                             "(e.g. 'working on a policy paper about AI governance')"},
+                  "limit": {"type": "integer", "description": "Max results (default 10)"}},
+               "required": ["context"]},
+              t_find_related),
     ]
 
     # Opt-in write tools. Only registered when <vault>/mcp_config.json sets

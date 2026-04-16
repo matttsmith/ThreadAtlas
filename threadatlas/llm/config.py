@@ -59,6 +59,10 @@ ALLOWED_USED_FOR = frozenset({
     "summaries",
     "group_naming",
     "chunk_gating",
+    # v2 pipeline tasks
+    "turn_classification",
+    "extraction",
+    "profile",
 })
 
 # Supported provider backends.

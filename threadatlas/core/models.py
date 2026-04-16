@@ -63,6 +63,45 @@ class Role(str, Enum):
     OTHER = "other"
 
 
+class Register(str, Enum):
+    WORK = "work"
+    RESEARCH = "research"
+    CAREER_LOGISTICS = "career_logistics"
+    CREATIVE_WRITING = "creative_writing"
+    ROLEPLAY = "roleplay"
+    JAILBREAK_EXPERIMENT = "jailbreak_experiment"
+    PUZZLE_HOBBY = "puzzle_hobby"
+    PERSONAL = "personal"
+    OTHER = "other"
+
+
+class RealityMode(str, Enum):
+    LITERAL = "literal"
+    FICTIONAL = "fictional"
+    HYPOTHETICAL = "hypothetical"
+
+
+class EntityType(str, Enum):
+    PERSON = "person"
+    ORGANIZATION = "organization"
+    CONCEPT = "concept"
+    ARTIFACT = "artifact"
+    PLACE = "place"
+    GLITCH_TOKEN = "glitch_token"
+    FICTIONAL_CHARACTER = "fictional_character"
+    OTHER = "other"
+
+
+# Default register exclusions for MCP queries: filter out roleplay and
+# jailbreak_experiment unless explicitly requested.
+DEFAULT_REGISTER_EXCLUDES = frozenset({
+    Register.ROLEPLAY.value,
+    Register.JAILBREAK_EXPERIMENT.value,
+})
+
+ALL_REGISTERS = frozenset(r.value for r in Register)
+
+
 class DerivedKind(str, Enum):
     PROJECT = "project"
     ENTITY = "entity"
@@ -141,6 +180,35 @@ class DerivedObject:
     canonical_key: str = ""  # used for dedupe within a kind, e.g. lower(title)
     created_at: float = 0.0
     updated_at: float = 0.0
+    # v2 fields
+    entity_type: str | None = None  # EntityType value for entities
+    source_register: str | None = None
+    source_reality_mode: str | None = None
+    paraphrase: str | None = None  # LLM paraphrase for decisions/open_loops
+    first_seen: float | None = None
+    last_seen: float | None = None
+    status: str | None = None  # active|dormant|completed for projects
+
+
+@dataclass
+class MessageClassification:
+    message_id: str
+    register: str = Register.OTHER.value
+    reality_mode: str = RealityMode.LITERAL.value
+    prompt_version: str = ""
+    classified_at: float = 0.0
+
+
+@dataclass
+class ConversationLLMMeta:
+    conversation_id: str
+    llm_summary: str | None = None
+    dominant_register: str | None = None
+    content_hash: str | None = None
+    extraction_prompt_version: str | None = None
+    extracted_at: float | None = None
+    profile_cache: str | None = None
+    profile_cached_at: float | None = None
 
 
 @dataclass

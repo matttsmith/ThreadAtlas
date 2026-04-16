@@ -54,8 +54,12 @@
   },
   "tools": [
     {
+      "name": "query",
+      "description": "Structured hybrid search across all indexed material with filter prefixes"
+    },
+    {
       "name": "search_conversations",
-      "description": "Keyword search over indexed conversations"
+      "description": "Hybrid keyword + semantic search over indexed conversations"
     },
     {
       "name": "search_chunks",
@@ -63,7 +67,7 @@
     },
     {
       "name": "get_conversation_summary",
-      "description": "Get summary metadata for one indexed conversation"
+      "description": "Get LLM-generated summary and metadata for one indexed conversation"
     },
     {
       "name": "get_conversation_messages",
@@ -95,7 +99,7 @@
     },
     {
       "name": "list_entities",
-      "description": "List recurring entities across indexed material"
+      "description": "List recurring entities with type disambiguation across indexed material"
     },
     {
       "name": "list_groups",
@@ -104,6 +108,14 @@
     {
       "name": "get_group",
       "description": "Show one group with its indexed members"
+    },
+    {
+      "name": "generate_profile",
+      "description": "Generate a narrative profile of the indexed user organized by topic"
+    },
+    {
+      "name": "find_related",
+      "description": "Find past conversations most relevant to a given context description"
     },
     {
       "name": "inspect_conversation_storage",

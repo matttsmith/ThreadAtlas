@@ -19,6 +19,17 @@ from .query_engine import (
     query,
 )
 
+from .embeddings import (
+    TFIDFEmbedder,
+    build_all_embeddings,
+    build_embeddings_for_conversation,
+    cosine_similarity,
+    embedding_to_bytes,
+    bytes_to_embedding,
+    fit_embedder_from_corpus,
+    reciprocal_rank_fusion,
+)
+
 __all__ = [
     "SearchHit",
     "search_conversations",
@@ -33,4 +44,12 @@ __all__ = [
     "QueryResult",
     "parse_query",
     "query",
+    "TFIDFEmbedder",
+    "build_all_embeddings",
+    "build_embeddings_for_conversation",
+    "cosine_similarity",
+    "embedding_to_bytes",
+    "bytes_to_embedding",
+    "fit_embedder_from_corpus",
+    "reciprocal_rank_fusion",
 ]
