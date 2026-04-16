@@ -31,6 +31,7 @@ from ..search import (
     list_open_loops,
     project_timeline,
     project_view,
+    query as query_engine,
     search_chunks,
     search_conversations,
 )
@@ -246,7 +247,49 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             "mcp_visible": c.state in MCP_VISIBLE_STATES,
         })
 
+    def t_query(args: dict) -> dict:
+        """Structured query across all indexed material.
+
+        Accepts a single query string that may contain filter prefixes
+        like ``source:chatgpt``, ``tag:architecture``, ``kind:decision``,
+        ``project:<id>``, ``after:2024-01-01``, ``before:2024-12-31``,
+        ``has:open_loops``, ``has:chunks``. Remaining text is used for
+        keyword search. Returns a unified ranked result set spanning
+        conversations, chunks, and derived objects.
+        """
+        q = str(args.get("query") or "")
+        limit = int(args.get("limit") or 25)
+        result = query_engine(store, q, visible_states=visible, limit=limit)
+        return _ok({
+            "raw_query": result.raw_query,
+            "filters": result.filters,
+            "hits": [
+                {
+                    "hit_type": h.hit_type,
+                    "id": h.id,
+                    "title": h.title,
+                    "snippet": h.snippet,
+                    "score": h.score,
+                    "metadata": h.metadata,
+                }
+                for h in result.hits
+            ],
+            "total_by_type": result.total_by_type,
+            "elapsed_ms": result.elapsed_ms,
+        })
+
     tools = [
+        _Tool("query", "Structured query across all indexed material. "
+              "Supports filter prefixes: source:, tag:, kind:, project:, after:, before:, has:. "
+              "Remaining text is used for keyword search. Returns conversations, chunks, and derived objects.",
+              {"type": "object",
+               "properties": {
+                   "query": {"type": "string",
+                             "description": "Query string, optionally with filter prefixes "
+                                            "(e.g. 'migration plan source:chatgpt', 'kind:decision after:2024-06-01')"},
+                   "limit": {"type": "integer", "description": "Max results (default 25)"}},
+               "required": ["query"]},
+              t_query),
         _Tool("search_conversations", "Keyword search over indexed conversations.",
               {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]},
               t_search_conversations),
