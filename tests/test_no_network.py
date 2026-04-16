@@ -46,10 +46,23 @@ def _find_imports(path: Path) -> set[str]:
     return out
 
 
+# The llama_server_backend is the ONE module allowed to use stdlib HTTP
+# (urllib) for loopback-only communication with a locally-running model
+# server.  It is never imported at module load time — the runner does a
+# lazy ``from .llama_server_backend import ...`` only when the provider is
+# ``llama_server``.  Every other module must remain network-free.
+_NETWORK_ALLOWLIST = {
+    "threadatlas/llm/llama_server_backend.py",
+}
+
+
 def test_no_forbidden_imports_in_runtime_package():
     offenders: list[tuple[str, str]] = []
     for py in _iter_python_files():
         rel = py.relative_to(Path(threadatlas.__file__).parent.parent)
+        rel_str = str(rel).replace("\\", "/")  # normalize Windows paths
+        if rel_str in _NETWORK_ALLOWLIST:
+            continue
         # The MCP module is allowed to depend on the optional 'mcp' package
         # (which is itself a stdio adapter) - but only if a user installs it.
         # Our shipped server uses no third-party imports.

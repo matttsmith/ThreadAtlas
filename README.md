@@ -172,11 +172,14 @@ tools.
 
 ## Optional: local LLM integration
 
-ThreadAtlas never connects to the internet. If you want higher-quality
-summaries, prose group names, or LLM-assisted chunk refinement, install a
-local model and point ThreadAtlas at it via a **stdio subprocess**.
+ThreadAtlas never connects to the internet by default. If you want
+higher-quality summaries, prose group names, or LLM-assisted chunk
+refinement, install a local model and point ThreadAtlas at it via one of
+two backends.
 
-Create `<vault>/local_llm.json`:
+### Option A: subprocess (original, zero-network)
+
+Invoke a local binary (llama.cpp CLI, MLX-LM, llamafile) directly:
 
 ```json
 {
@@ -196,15 +199,40 @@ Create `<vault>/local_llm.json`:
 }
 ```
 
-Then:
+### Option B: llama-server (loopback HTTP)
+
+Talk to a locally-running llama-server (or any OpenAI-compatible
+endpoint) over loopback. Start the server separately, then configure:
+
+```json
+{
+  "provider": "llama_server",
+  "base_url": "http://127.0.0.1:8080",
+  "model": "qwen2.5-3b-instruct",
+  "temperature": 0.1,
+  "max_tokens": 256,
+  "timeout_seconds": 120,
+  "max_prompt_chars": 12000,
+  "max_response_chars": 4000,
+  "used_for": ["summaries", "group_naming", "chunk_gating"],
+  "dry_run": false
+}
+```
+
+Non-loopback URLs are rejected unless `"allow_nonlocal_host": true` is
+explicitly set.
+
+### Validate and use
 
 ```bash
+threadatlas llm-check ./vault                    # validate config + server
+threadatlas llm-check ./vault --probe            # also send a test completion
 threadatlas summarize ./vault                    # 2-3 sentence summaries
 threadatlas group ./vault --llm-names            # prose cluster names
 threadatlas llm-chunk ./vault                    # refine chunk boundaries
 ```
 
-Safeguards:
+### Safeguards
 
 - **`used_for` is a whitelist.** A task not listed is refused. Default is
   LLM fully disabled.
@@ -212,10 +240,12 @@ Safeguards:
 - **Every call logged to `vault/logs/llm_calls.jsonl` — metadata only, no
   prompt or response content.**
 - **`dry_run: true`** makes every call print the prompt locally and skip
-  the subprocess. Use this to audit exactly what would be sent.
+  the backend. Use this to audit exactly what would be sent.
 - **Chunk boundary gate can only merge**, never introduce new splits. If
   the LLM fails or returns malformed JSON, the deterministic boundary is
   preserved.
+- **Loopback-only by default.** The llama_server backend refuses
+  non-127.0.0.1/localhost URLs unless explicitly overridden.
 
 A 3B-class quantized Qwen or Llama model on an M-series Mac runs the
 summarization workflow comfortably.
@@ -232,7 +262,7 @@ threadatlas/
   extract/     deterministic chunking + heuristic derived objects
   search/      keyword search + project synthesis + timeline
   cluster/     TF-IDF + k-means grouping (stdlib, deterministic)
-  llm/         optional local-LLM subprocess: runner, prompts, tasks
+  llm/         optional local-LLM integration: subprocess + llama_server backends
   export/      XLSX workbook profiles
   mcp/         stdio JSON-RPC server (read-only, indexed-only)
   tui/         curses dashboard (read-only, responsive)

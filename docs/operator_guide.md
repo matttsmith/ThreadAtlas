@@ -168,11 +168,14 @@ you've changed the state of a meaningful slice of conversations.
 
 ## Optional: local LLM integration
 
-ThreadAtlas never talks to the network. If you want higher-quality
-summaries, prose group names, or LLM-assisted chunk refinement, you run
-a **local** model yourself (llama.cpp, MLX-LM, llamafile, Ollama in
-stdin mode, etc.) and point ThreadAtlas at it via a stdio subprocess.
+ThreadAtlas never talks to the network by default. If you want
+higher-quality summaries, prose group names, or LLM-assisted chunk
+refinement, you run a **local** model yourself and point ThreadAtlas
+at it via one of two backends.
 
+### Backend A: subprocess (zero-network)
+
+Invoke a local binary (llama.cpp CLI, MLX-LM, llamafile) directly.
 Create `<vault>/local_llm.json`:
 
 ```json
@@ -196,13 +199,46 @@ Create `<vault>/local_llm.json`:
 - `command` is the argv. `{PROMPT_FILE}` is substituted with a temp
   file; `{PROMPT}` is inline substitution; if neither appears, the
   prompt goes on stdin.
+
+### Backend B: llama-server (loopback HTTP)
+
+Talk to a locally-running llama-server (or any OpenAI-compatible
+endpoint) over HTTP.  Start `llama-server` yourself, then configure:
+
+```json
+{
+  "provider": "llama_server",
+  "base_url": "http://127.0.0.1:8080",
+  "model": "qwen2.5-3b-instruct",
+  "temperature": 0.1,
+  "max_tokens": 256,
+  "timeout_seconds": 120,
+  "max_prompt_chars": 12000,
+  "max_response_chars": 4000,
+  "used_for": ["summaries", "group_naming", "chunk_gating"],
+  "dry_run": false
+}
+```
+
+- `base_url` must point to a **loopback** address (127.0.0.1 /
+  localhost / ::1).  Non-loopback URLs are rejected unless you set
+  `"allow_nonlocal_host": true` — which you should not do unless you
+  understand the privacy implications.
+- `model` is the model alias as reported by `/v1/models`. If omitted,
+  the server's default is used.
+- `healthcheck_on_start` (default true): the runner will verify
+  `/v1/models` before the first call.
+
+### Common fields (both backends)
+
 - `used_for` is a **whitelist**. A task not listed will be refused.
-  Default shipping state is the feature disabled. Remove tasks you
-  don't want the LLM doing.
+  Default shipping state is the feature disabled.
 - `dry_run: true` makes every call print the prompt locally and skip
-  the subprocess. Use this to inspect exactly what would be sent.
+  the backend. Use this to inspect exactly what would be sent.
 - Every call is logged (metadata only, no content) to
   `<vault>/logs/llm_calls.jsonl`.
+- `timeout_seconds`, `max_prompt_chars`, `max_response_chars` — caps
+  enforced per-call across both backends.
 
 Hardware guidance for a MacBook Air M4 with 24 GB unified memory:
 Qwen2.5-3B-Instruct Q4 (~2 GB) or Llama-3.2-3B-Instruct Q4 (~2 GB)
@@ -211,6 +247,10 @@ models (7B) give marginally better prose for group names.
 
 ### LLM commands
 
+- `threadatlas llm-check ./vault` — validate config (subprocess:
+  executable exists; llama_server: `/v1/models` reachable).
+- `threadatlas llm-check ./vault --probe` — also send a tiny
+  completion to confirm the model responds.
 - `threadatlas summarize ./vault` — generate topical 2-3 sentence
   summaries; updates `summary_short` and sets `summary_source = llm`.
 - `threadatlas summarize ./vault --conversation-id conv_xxx` — just one.

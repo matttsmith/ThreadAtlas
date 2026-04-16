@@ -434,6 +434,49 @@ def _require_llm_runner(vault, task: str):
     return LLMRunner(vault, cfg)
 
 
+def cmd_llm_check(args) -> int:
+    """Validate the local LLM configuration and optionally probe the model."""
+    vault = open_vault(args.vault)
+    cfg = load_llm_config(vault.root)
+    if cfg is None:
+        print(f"No local_llm.json found at {vault.root}", file=sys.stderr)
+        return 1
+
+    print(f"Provider:      {cfg.provider}")
+    print(f"Used for:      {sorted(cfg.used_for)}")
+    print(f"Dry run:       {cfg.dry_run}")
+    print(f"Timeout:       {cfg.timeout_seconds}s")
+
+    if cfg.provider == "subprocess":
+        import shutil
+        exe = cfg.command[0] if cfg.command else ""
+        found = shutil.which(exe)
+        if found:
+            print(f"Executable:    {found} (ok)")
+        else:
+            print(f"Executable:    {exe} (NOT FOUND)", file=sys.stderr)
+            return 1
+    elif cfg.provider == "llama_server":
+        print(f"Base URL:      {cfg.base_url}")
+        print(f"Model:         {cfg.model or '(auto)'}")
+        from ..llm.llama_server_backend import check_readiness, probe as llm_probe
+        status = check_readiness(cfg)
+        if status["ready"]:
+            print(f"Models:        {status['models']} (ok)")
+        else:
+            print(f"Health check:  FAILED - {status.get('error', 'unknown')}", file=sys.stderr)
+            return 1
+        if getattr(args, "probe", False):
+            result = llm_probe(cfg)
+            if result["ok"]:
+                print(f"Probe:         ok ({result['text']!r})")
+            else:
+                print(f"Probe:         FAILED - {result.get('error', 'unknown')}", file=sys.stderr)
+                return 1
+    print("LLM configuration valid.")
+    return 0
+
+
 def cmd_group(args) -> int:
     vault = open_vault(args.vault)
     store = open_store(vault)
