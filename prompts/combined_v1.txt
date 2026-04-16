@@ -1,0 +1,36 @@
+PROMPT_VERSION: combined_v1
+
+You are analyzing an AI chat conversation for a personal knowledge base.
+Do TWO things in one response:
+
+1. CLASSIFY each message's register and reality_mode.
+2. EXTRACT structured data from the conversation.
+
+REGISTER values: work | research | career_logistics | creative_writing | roleplay | jailbreak_experiment | puzzle_hobby | personal | other
+REALITY_MODE values: literal | fictional | hypothetical
+
+CRITICAL: Only extract decisions and open_loops from user messages where reality_mode is "literal". Do not extract roleplay dialogue as real decisions.
+
+Conversation title: <<TITLE>>
+Created: <<CREATED>> | Updated: <<UPDATED>>
+
+Messages:
+<<MESSAGES>>
+
+Return exactly one JSON object:
+{
+  "classifications": [{"register": "...", "reality_mode": "..."}, ...],
+  "summary": "<2-3 sentence summary>",
+  "projects": [{"title": "...", "description": "...", "status": "active|dormant|completed"}],
+  "decisions": [{"verbatim": "<exact user sentence>", "paraphrase": "<rephrasing>"}],
+  "open_loops": [{"verbatim": "<exact user sentence>", "paraphrase": "<rephrasing>"}],
+  "entities": [{"name": "...", "type": "person|organization|concept|artifact|place|glitch_token|fictional_character|other", "gloss": "<one-line description>"}]
+}
+
+Rules:
+- classifications array must have one entry per message, in order.
+- Empty arrays for categories with no items.
+- Only include genuine user commitments as decisions, not assistant suggestions.
+- Keep summary concrete and topical.
+
+Your JSON:

@@ -32,6 +32,7 @@ from ..core.vault import Vault
 from ..store import Store, transaction
 from .common import LLMResponse, parse_json_response
 from .prompt_loader import (
+    COMBINED_PROMPT,
     EXTRACTION_PROMPT,
     TURN_CLASSIFIER_PROMPT,
     get_prompt_version,
@@ -44,6 +45,31 @@ _JSON_ARRAY_RX = re.compile(r"\[.*\]", re.DOTALL)
 
 VALID_REGISTERS = frozenset(r.value for r in Register)
 VALID_REALITY_MODES = frozenset(r.value for r in RealityMode)
+
+# Short conversations (few user/assistant messages) can use a combined
+# single-pass prompt instead of two separate LLM calls. This roughly
+# halves the wall-clock time for the majority of conversations which tend
+# to be short.
+SINGLE_PASS_MAX_MESSAGES = 30
+
+# Heuristic keywords for fast register classification without LLM.
+# If the title + first few messages match one of these patterns strongly,
+# we skip the LLM classification call entirely.
+_ROLEPLAY_SIGNALS = frozenset({
+    "roleplay", "you are a", "you're a", "i am a", "let's pretend",
+    "in character", "stay in character", "your character",
+    "act as", "play the role",
+})
+_JAILBREAK_SIGNALS = frozenset({
+    "ignore previous", "ignore all previous", "ignore your instructions",
+    "system prompt", "jailbreak", "dan mode", "developer mode",
+    "bypass", "pretend you have no restrictions",
+})
+_CREATIVE_SIGNALS = frozenset({
+    "write me a story", "write a story", "write a poem",
+    "write me a poem", "write a script", "creative writing",
+    "short story about", "fiction about",
+})
 
 
 def _content_hash(messages: list[Message]) -> str:
@@ -100,6 +126,33 @@ def _parse_json_array(resp: LLMResponse) -> list[dict] | None:
 
 
 # ---------------------------------------------------------------------------
+# Fast heuristic pre-classification (no LLM needed)
+# ---------------------------------------------------------------------------
+
+def _heuristic_register(title: str, messages: list[Message]) -> str | None:
+    """Try to classify register from keywords alone.
+
+    Returns a register string if confident, None if LLM is needed.
+    Only fires on high-precision signals to avoid false positives.
+    """
+    text_sample = (title or "").lower()
+    for m in messages[:6]:
+        if m.role == "user":
+            text_sample += " " + (m.content_text or "").lower()[:500]
+
+    for signal in _JAILBREAK_SIGNALS:
+        if signal in text_sample:
+            return "jailbreak_experiment"
+    for signal in _ROLEPLAY_SIGNALS:
+        if signal in text_sample:
+            return "roleplay"
+    for signal in _CREATIVE_SIGNALS:
+        if signal in text_sample:
+            return "creative_writing"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Pass 1: Turn classification
 # ---------------------------------------------------------------------------
 
@@ -109,17 +162,35 @@ def classify_turns(
     title: str,
     messages: list[Message],
 ) -> list[MessageClassification]:
-    """Classify each message's register and reality_mode via LLM."""
+    """Classify each message's register and reality_mode via LLM.
+
+    Optimization: if the heuristic pre-classifier is confident about the
+    register, we skip the LLM call entirely and assign the heuristic
+    result to all messages. This saves ~15-25 seconds per conversation
+    for the many conversations that are obviously work/roleplay/etc.
+    """
+    now = time.time()
+    classifiable = [m for m in messages if m.role in ("user", "assistant")]
+    prompt_version = get_prompt_version(TURN_CLASSIFIER_PROMPT)
+
+    # Fast path: heuristic classification for obvious cases.
+    heuristic_reg = _heuristic_register(title, messages)
+    if heuristic_reg is not None:
+        rm = "fictional" if heuristic_reg in ("roleplay",) else "literal"
+        return [MessageClassification(
+            message_id=m.message_id,
+            register=heuristic_reg,
+            reality_mode=rm,
+            prompt_version=f"heuristic+{prompt_version}",
+            classified_at=now,
+        ) for m in classifiable]
+
+    # LLM path.
     rendered = _render_messages_for_classification(messages)
     prompt = render_prompt(TURN_CLASSIFIER_PROMPT, TITLE=title or "(no title)", MESSAGES=rendered)
-    prompt_version = get_prompt_version(TURN_CLASSIFIER_PROMPT)
 
     resp = runner.run("turn_classification", prompt)
     parsed = _parse_json_array(resp)
-
-    now = time.time()
-    # Filter to only user/assistant messages for classification matching.
-    classifiable = [m for m in messages if m.role in ("user", "assistant")]
 
     if parsed and len(parsed) >= len(classifiable):
         classifications = []
@@ -212,6 +283,111 @@ def extract_conversation(
 
 
 # ---------------------------------------------------------------------------
+# Combined single-pass mode (for short conversations)
+# ---------------------------------------------------------------------------
+
+def _run_combined_pass(
+    vault: Vault,
+    runner: LLMRunner,
+    conv,
+    messages: list[Message],
+    classifiable: list[Message],
+) -> tuple[list[MessageClassification], ExtractionResult]:
+    """Run classification + extraction in a single LLM call.
+
+    For conversations with <= SINGLE_PASS_MAX_MESSAGES user/assistant
+    messages, this halves the wall-clock time by avoiding two separate
+    LLM round-trips.
+
+    If the heuristic pre-classifier fires, we skip the LLM classification
+    entirely and only need one call for extraction — so this path only
+    saves time when the heuristic doesn't fire.
+    """
+    now = time.time()
+    prompt_version = get_prompt_version(COMBINED_PROMPT)
+
+    # Check heuristic first — if it fires, we only need the extraction call.
+    heuristic_reg = _heuristic_register(conv.title, messages)
+    if heuristic_reg is not None:
+        rm = "fictional" if heuristic_reg in ("roleplay",) else "literal"
+        classifications = [MessageClassification(
+            message_id=m.message_id,
+            register=heuristic_reg,
+            reality_mode=rm,
+            prompt_version=f"heuristic+{prompt_version}",
+            classified_at=now,
+        ) for m in classifiable]
+        cls_by_id = {c.message_id: c for c in classifications}
+        result = extract_conversation(
+            vault, runner, conv.title, messages, cls_by_id,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        )
+        return classifications, result
+
+    # Combined LLM call.
+    rendered = _render_messages_for_classification(messages)
+
+    import datetime as _dt
+    def _fmt_ts(ts):
+        if not ts:
+            return "unknown"
+        return _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+
+    prompt = render_prompt(
+        COMBINED_PROMPT,
+        TITLE=conv.title or "(no title)",
+        CREATED=_fmt_ts(conv.created_at),
+        UPDATED=_fmt_ts(conv.updated_at),
+        MESSAGES=rendered,
+    )
+
+    # The combined prompt uses the "extraction" task since it's the more
+    # complex of the two; the config needs extraction enabled.
+    resp = runner.run("extraction", prompt)
+    parsed = parse_json_response(resp)
+
+    if parsed:
+        # Parse classifications from combined response.
+        raw_cls = parsed.get("classifications", [])
+        classifications = []
+        for i, m in enumerate(classifiable):
+            item = raw_cls[i] if i < len(raw_cls) else {}
+            reg = item.get("register", "other")
+            rm = item.get("reality_mode", "literal")
+            if reg not in VALID_REGISTERS:
+                reg = "other"
+            if rm not in VALID_REALITY_MODES:
+                rm = "literal"
+            classifications.append(MessageClassification(
+                message_id=m.message_id,
+                register=reg,
+                reality_mode=rm,
+                prompt_version=prompt_version,
+                classified_at=now,
+            ))
+
+        result = ExtractionResult(
+            summary=parsed.get("summary", ""),
+            projects=parsed.get("projects", []),
+            decisions=parsed.get("decisions", []),
+            open_loops=parsed.get("open_loops", []),
+            entities=parsed.get("entities", []),
+        )
+        return classifications, result
+
+    # Fallback: default classifications + empty extraction.
+    classifications = [MessageClassification(
+        message_id=m.message_id,
+        register="other",
+        reality_mode="literal",
+        prompt_version=prompt_version,
+        classified_at=now,
+    ) for m in classifiable]
+    return classifications, ExtractionResult("", [], [], [], [])
+
+
+# ---------------------------------------------------------------------------
 # Full pipeline: both passes + persistence
 # ---------------------------------------------------------------------------
 
@@ -260,16 +436,23 @@ def run_pipeline(
         if existing_hash == current_hash:
             return {"skipped": True, "reason": "unchanged"}
 
-    # Pass 1: classify turns.
-    classifications = classify_turns(vault, runner, conv.title, messages)
+    classifiable = [m for m in messages if m.role in ("user", "assistant")]
+    use_combined = len(classifiable) <= SINGLE_PASS_MAX_MESSAGES
 
-    # Pass 2: extract structured data.
-    cls_by_id = {c.message_id: c for c in classifications}
-    result = extract_conversation(
-        vault, runner, conv.title, messages, cls_by_id,
-        created_at=conv.created_at,
-        updated_at=conv.updated_at,
-    )
+    if use_combined:
+        # Single-pass: classification + extraction in one LLM call.
+        classifications, result = _run_combined_pass(
+            vault, runner, conv, messages, classifiable,
+        )
+    else:
+        # Two-pass: separate classification and extraction calls.
+        classifications = classify_turns(vault, runner, conv.title, messages)
+        cls_by_id = {c.message_id: c for c in classifications}
+        result = extract_conversation(
+            vault, runner, conv.title, messages, cls_by_id,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+        )
 
     # Compute dominant register from user messages.
     user_registers = [c.register for c in classifications

@@ -39,3 +39,4 @@ def render_prompt(filename: str, **vars: str) -> str:
 TURN_CLASSIFIER_PROMPT = "turn_classifier_v1.txt"
 EXTRACTION_PROMPT = "extraction_v1.txt"
 PROFILE_PROMPT = "profile_v1.txt"
+COMBINED_PROMPT = "combined_v1.txt"
