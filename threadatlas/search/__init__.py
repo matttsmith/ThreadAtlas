@@ -11,6 +11,14 @@ from .search import (
     project_timeline,
 )
 
+from .query_engine import (
+    QueryFilter,
+    QueryHit,
+    QueryResult,
+    parse_query,
+    query,
+)
+
 __all__ = [
     "SearchHit",
     "search_conversations",
@@ -20,4 +28,9 @@ __all__ = [
     "list_entities",
     "project_view",
     "project_timeline",
+    "QueryFilter",
+    "QueryHit",
+    "QueryResult",
+    "parse_query",
+    "query",
 ]
