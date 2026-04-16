@@ -199,6 +199,15 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--conversation-id", default=None)
     s.set_defaults(handler=cmd.cmd_llm_chunk)
 
+    s = sub.add_parser(
+        "llm-check",
+        help="Validate local LLM configuration and optionally probe the model",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--probe", action="store_true",
+                   help="Send a tiny completion to verify the model responds (llama_server only)")
+    s.set_defaults(handler=cmd.cmd_llm_check)
+
     # --- operator hygiene ---
     s = sub.add_parser("check", help="Vault health check: normalized files, FTS sync, leaks, orphans")
     s.add_argument("vault", type=Path)

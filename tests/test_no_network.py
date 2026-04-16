@@ -46,10 +46,23 @@ def _find_imports(path: Path) -> set[str]:
     return out
 
 
+# The llama_server_backend is the ONE module allowed to use stdlib HTTP
+# (urllib) for loopback-only communication with a locally-running model
+# server.  It is never imported at module load time — the runner does a
+# lazy ``from .llama_server_backend import ...`` only when the provider is
+# ``llama_server``.  Every other module must remain network-free.
+_NETWORK_ALLOWLIST = {
+    "threadatlas/llm/llama_server_backend.py",
+}
+
+
 def test_no_forbidden_imports_in_runtime_package():
     offenders: list[tuple[str, str]] = []
     for py in _iter_python_files():
         rel = py.relative_to(Path(threadatlas.__file__).parent.parent)
+        rel_str = str(rel).replace("\\", "/")  # normalize Windows paths
+        if rel_str in _NETWORK_ALLOWLIST:
+            continue
         # The MCP module is allowed to depend on the optional 'mcp' package
         # (which is itself a stdio adapter) - but only if a user installs it.
         # Our shipped server uses no third-party imports.
@@ -95,6 +108,66 @@ def test_llm_runner_does_not_open_sockets(monkeypatch, tmp_vault):
     resp = runner.run("summaries", "ping")
     assert resp.success
     assert sentinel == []
+
+
+def test_llama_server_backend_is_not_imported_by_default():
+    """The llama_server_backend module must NOT be imported at package load time.
+
+    It uses urllib (networking). The runner only imports it lazily when the
+    provider is 'llama_server'. Verify that importing threadatlas.llm does
+    NOT pull in llama_server_backend.
+    """
+    import importlib
+    import sys
+
+    # Unload if previously cached.
+    mod_name = "threadatlas.llm.llama_server_backend"
+    was_loaded = mod_name in sys.modules
+    if was_loaded:
+        saved = sys.modules.pop(mod_name)
+
+    try:
+        # Re-import the package fresh.
+        importlib.reload(importlib.import_module("threadatlas.llm"))
+        assert mod_name not in sys.modules, (
+            "llama_server_backend is imported at module load time — "
+            "it should only be imported lazily when provider=llama_server"
+        )
+    finally:
+        if was_loaded:
+            sys.modules[mod_name] = saved
+
+
+def test_subprocess_runner_does_not_import_llama_server(monkeypatch, tmp_vault):
+    """When using the subprocess provider, llama_server_backend must never load."""
+    import json as _json
+    import sys as _sys
+
+    (tmp_vault.root / "local_llm.json").write_text(_json.dumps({
+        "command": [_sys.executable, "-m", "tests.fake_llm", "summary_ok"],
+        "timeout_seconds": 10,
+        "max_prompt_chars": 2000,
+        "max_response_chars": 1000,
+        "used_for": ["summaries"],
+    }), encoding="utf-8")
+
+    mod_name = "threadatlas.llm.llama_server_backend"
+    was_loaded = mod_name in _sys.modules
+    if was_loaded:
+        saved = _sys.modules.pop(mod_name)
+
+    try:
+        from threadatlas.llm import LLMRunner, load_config
+        cfg = load_config(tmp_vault.root)
+        runner = LLMRunner(tmp_vault, cfg)
+        resp = runner.run("summaries", "ping")
+        assert resp.success
+        assert mod_name not in _sys.modules, (
+            "llama_server_backend was imported during a subprocess run"
+        )
+    finally:
+        if was_loaded:
+            _sys.modules[mod_name] = saved
 
 
 def test_serve_does_not_open_sockets(monkeypatch):

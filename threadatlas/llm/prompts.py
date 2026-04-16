@@ -122,6 +122,24 @@ def render_chunk_gate_prompt(tail_messages: str, head_messages: str) -> str:
 
 # --- message rendering helpers --------------------------------------------
 
+def _get_field(m, name: str, default: str = "") -> str:
+    """Get a field from a Message object, dict, or sqlite3.Row.
+
+    Avoids the ``getattr(...) or m.get(...)`` pattern which breaks when
+    the attribute exists but is falsy (e.g. ``content_text=""``).
+    """
+    val = getattr(m, name, None)
+    if val is not None:
+        return val
+    # Fall back to dict-style access (sqlite3.Row, plain dict).
+    if hasattr(m, "get"):
+        return m.get(name, default)
+    try:
+        return m[name]
+    except (KeyError, TypeError, IndexError):
+        return default
+
+
 def render_messages(
     messages: list,
     *,
@@ -130,16 +148,19 @@ def render_messages(
 ) -> str:
     """Turn a list of Message-like records into a role-prefixed block.
 
+    Accepts ``Message`` dataclass instances, dicts, or ``sqlite3.Row``
+    objects.
+
     * Each message prefixed by ``user:`` or ``assistant:``.
     * Individual messages truncated to ``max_chars_per_message``.
     * Roles outside ``roles_to_include`` are dropped.
     """
     lines: list[str] = []
     for m in messages:
-        role = getattr(m, "role", None) or m.get("role", "")
+        role = _get_field(m, "role", "")
         if role not in roles_to_include:
             continue
-        text = getattr(m, "content_text", None) or m.get("content_text", "") or ""
+        text = _get_field(m, "content_text", "") or ""
         text = text.strip().replace("\n", " ")
         if len(text) > max_chars_per_message:
             text = text[: max_chars_per_message - 3].rstrip() + "..."
