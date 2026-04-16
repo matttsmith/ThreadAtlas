@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_msg_state ON messages(visibility_state_inherited);
 
+-- Per-message LLM classification (v2 pipeline).
+CREATE TABLE IF NOT EXISTS message_classifications (
+    message_id TEXT PRIMARY KEY REFERENCES messages(message_id) ON DELETE CASCADE,
+    register TEXT NOT NULL DEFAULT 'other',
+    reality_mode TEXT NOT NULL DEFAULT 'literal',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    classified_at REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_msgclass_register ON message_classifications(register);
+
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
@@ -88,7 +98,15 @@ CREATE TABLE IF NOT EXISTS derived_objects (
     state TEXT NOT NULL DEFAULT 'active', -- active | suppressed
     canonical_key TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL DEFAULT 0,
-    updated_at REAL NOT NULL DEFAULT 0
+    updated_at REAL NOT NULL DEFAULT 0,
+    -- v2 fields: LLM extraction metadata
+    entity_type TEXT,           -- person|organization|concept|artifact|place|glitch_token|fictional_character|other
+    source_register TEXT,       -- register of the source turn(s)
+    source_reality_mode TEXT,   -- reality_mode of the source turn(s)
+    paraphrase TEXT,            -- LLM-generated paraphrase (decisions, open_loops)
+    first_seen REAL,            -- POSIX timestamp
+    last_seen REAL,             -- POSIX timestamp
+    status TEXT                 -- active|dormant|completed (projects)
 );
 CREATE INDEX IF NOT EXISTS idx_obj_kind ON derived_objects(kind, state);
 CREATE INDEX IF NOT EXISTS idx_obj_project ON derived_objects(project_id);
@@ -137,6 +155,26 @@ CREATE TABLE IF NOT EXISTS conversation_group_memberships (
 );
 CREATE INDEX IF NOT EXISTS idx_cgm_conv ON conversation_group_memberships(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_cgm_group ON conversation_group_memberships(group_id);
+
+-- Conversation-level LLM metadata (v2 pipeline).
+CREATE TABLE IF NOT EXISTS conversation_llm_meta (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    llm_summary TEXT,                   -- 2-3 sentence LLM summary
+    dominant_register TEXT,             -- most common register in the conversation
+    content_hash TEXT,                  -- SHA-256 of message content for incremental indexing
+    extraction_prompt_version TEXT,     -- prompt version used for extraction
+    extracted_at REAL,                  -- POSIX timestamp of last extraction
+    profile_cache TEXT,                 -- cached generate_profile output (JSON)
+    profile_cached_at REAL              -- POSIX timestamp of profile cache
+);
+
+-- Chunk embeddings for semantic search (v2 pipeline).
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    embedding BLOB NOT NULL,            -- float32 array as raw bytes
+    model_name TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL DEFAULT 0
+);
 
 -- FTS5 indexes ----------------------------------------------------------------
 --

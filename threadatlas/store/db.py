@@ -24,9 +24,11 @@ from typing import Iterable, Iterator
 from ..core.models import (
     Chunk,
     Conversation,
+    ConversationLLMMeta,
     DerivedObject,
     FTS_INDEXED_STATES,
     Message,
+    MessageClassification,
     ProvenanceLink,
 )
 from ..core.vault import Vault
@@ -62,12 +64,33 @@ class Store:
         rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
         return any(r["name"] == column for r in rows)
 
+    def _has_table(self, table: str) -> bool:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        return row["c"] > 0
+
     def _migrate(self) -> None:
         # v1.1 -> v1.2: conversations.summary_source column.
         if not self._has_column("conversations", "summary_source"):
             self.conn.execute(
                 "ALTER TABLE conversations ADD COLUMN summary_source TEXT NOT NULL DEFAULT 'deterministic'"
             )
+        # v1.2 -> v2.0: LLM extraction fields on derived_objects.
+        for col, typedef in [
+            ("entity_type", "TEXT"),
+            ("source_register", "TEXT"),
+            ("source_reality_mode", "TEXT"),
+            ("paraphrase", "TEXT"),
+            ("first_seen", "REAL"),
+            ("last_seen", "REAL"),
+            ("status", "TEXT"),
+        ]:
+            if not self._has_column("derived_objects", col):
+                self.conn.execute(
+                    f"ALTER TABLE derived_objects ADD COLUMN {col} {typedef}"
+                )
 
     def close(self) -> None:
         # Idempotent: callers may close more than once during teardown.
@@ -300,23 +323,37 @@ class Store:
                     """
                     UPDATE derived_objects
                        SET title = ?, description = ?, project_id = COALESCE(?, project_id),
-                           updated_at = ?
+                           updated_at = ?,
+                           entity_type = COALESCE(?, entity_type),
+                           source_register = COALESCE(?, source_register),
+                           source_reality_mode = COALESCE(?, source_reality_mode),
+                           paraphrase = COALESCE(?, paraphrase),
+                           first_seen = COALESCE(first_seen, ?),
+                           last_seen = COALESCE(?, last_seen),
+                           status = COALESCE(?, status)
                      WHERE object_id = ?
                     """,
-                    (obj.title, obj.description, obj.project_id, obj.updated_at, existing["object_id"]),
+                    (obj.title, obj.description, obj.project_id, obj.updated_at,
+                     obj.entity_type, obj.source_register, obj.source_reality_mode,
+                     obj.paraphrase, obj.first_seen, obj.last_seen, obj.status,
+                     existing["object_id"]),
                 )
                 return existing["object_id"]
         self.conn.execute(
             """
             INSERT INTO derived_objects (
                 object_id, kind, title, description, project_id,
-                state, canonical_key, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                state, canonical_key, created_at, updated_at,
+                entity_type, source_register, source_reality_mode,
+                paraphrase, first_seen, last_seen, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 obj.object_id, obj.kind, obj.title, obj.description,
                 obj.project_id, obj.state, obj.canonical_key,
                 obj.created_at, obj.updated_at,
+                obj.entity_type, obj.source_register, obj.source_reality_mode,
+                obj.paraphrase, obj.first_seen, obj.last_seen, obj.status,
             ),
         )
         return obj.object_id
@@ -654,6 +691,155 @@ class Store:
         for row in rows:
             self.reindex_conversation_fts(row["conversation_id"])
 
+    # --- message classifications (v2) ----------------------------------------
+
+    def upsert_message_classification(self, cls: MessageClassification) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO message_classifications (
+                message_id, register, reality_mode, prompt_version, classified_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (cls.message_id, cls.register, cls.reality_mode,
+             cls.prompt_version, cls.classified_at),
+        )
+
+    def upsert_message_classifications(self, classifications: list[MessageClassification]) -> None:
+        self.conn.executemany(
+            """
+            INSERT OR REPLACE INTO message_classifications (
+                message_id, register, reality_mode, prompt_version, classified_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            [(c.message_id, c.register, c.reality_mode,
+              c.prompt_version, c.classified_at) for c in classifications],
+        )
+
+    def get_message_classifications(self, conversation_id: str) -> list[MessageClassification]:
+        rows = self.conn.execute(
+            """
+            SELECT mc.message_id, mc.register, mc.reality_mode,
+                   mc.prompt_version, mc.classified_at
+              FROM message_classifications mc
+              JOIN messages m ON m.message_id = mc.message_id
+             WHERE m.conversation_id = ?
+             ORDER BY m.ordinal
+            """,
+            (conversation_id,),
+        ).fetchall()
+        return [MessageClassification(
+            message_id=r["message_id"],
+            register=r["register"],
+            reality_mode=r["reality_mode"],
+            prompt_version=r["prompt_version"],
+            classified_at=r["classified_at"],
+        ) for r in rows]
+
+    def get_dominant_register(self, conversation_id: str) -> str | None:
+        row = self.conn.execute(
+            """
+            SELECT mc.register, COUNT(*) AS cnt
+              FROM message_classifications mc
+              JOIN messages m ON m.message_id = mc.message_id
+             WHERE m.conversation_id = ? AND m.role = 'user'
+             GROUP BY mc.register
+             ORDER BY cnt DESC
+             LIMIT 1
+            """,
+            (conversation_id,),
+        ).fetchone()
+        return row["register"] if row else None
+
+    # --- conversation LLM meta (v2) -----------------------------------------
+
+    def upsert_conversation_llm_meta(self, meta: ConversationLLMMeta) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO conversation_llm_meta (
+                conversation_id, llm_summary, dominant_register, content_hash,
+                extraction_prompt_version, extracted_at,
+                profile_cache, profile_cached_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (meta.conversation_id, meta.llm_summary, meta.dominant_register,
+             meta.content_hash, meta.extraction_prompt_version,
+             meta.extracted_at, meta.profile_cache, meta.profile_cached_at),
+        )
+
+    def get_conversation_llm_meta(self, conversation_id: str) -> ConversationLLMMeta | None:
+        row = self.conn.execute(
+            "SELECT * FROM conversation_llm_meta WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return ConversationLLMMeta(
+            conversation_id=row["conversation_id"],
+            llm_summary=row["llm_summary"],
+            dominant_register=row["dominant_register"],
+            content_hash=row["content_hash"],
+            extraction_prompt_version=row["extraction_prompt_version"],
+            extracted_at=row["extracted_at"],
+            profile_cache=row["profile_cache"],
+            profile_cached_at=row["profile_cached_at"],
+        )
+
+    def get_conversation_content_hash(self, conversation_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT content_hash FROM conversation_llm_meta WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        return row["content_hash"] if row else None
+
+    # --- chunk embeddings (v2) ----------------------------------------------
+
+    def upsert_chunk_embedding(self, chunk_id: str, embedding: bytes,
+                                model_name: str, created_at: float) -> None:
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO chunk_embeddings (
+                chunk_id, embedding, model_name, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (chunk_id, embedding, model_name, created_at),
+        )
+
+    def get_chunk_embeddings_for_conversation(self, conversation_id: str) -> list[tuple[str, bytes]]:
+        rows = self.conn.execute(
+            """
+            SELECT ce.chunk_id, ce.embedding
+              FROM chunk_embeddings ce
+              JOIN chunks c ON c.chunk_id = ce.chunk_id
+             WHERE c.conversation_id = ?
+            """,
+            (conversation_id,),
+        ).fetchall()
+        return [(r["chunk_id"], r["embedding"]) for r in rows]
+
+    def get_all_chunk_embeddings(self, visible_states: tuple[str, ...] | None = None) -> list[tuple[str, str, bytes]]:
+        """Return (chunk_id, conversation_id, embedding) for all chunks with embeddings."""
+        if visible_states:
+            placeholders = ",".join("?" for _ in visible_states)
+            rows = self.conn.execute(
+                f"""
+                SELECT ce.chunk_id, c.conversation_id, ce.embedding
+                  FROM chunk_embeddings ce
+                  JOIN chunks ch ON ch.chunk_id = ce.chunk_id
+                  JOIN conversations c ON c.conversation_id = ch.conversation_id
+                 WHERE c.state IN ({placeholders})
+                """,
+                list(visible_states),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """
+                SELECT ce.chunk_id, ch.conversation_id, ce.embedding
+                  FROM chunk_embeddings ce
+                  JOIN chunks ch ON ch.chunk_id = ce.chunk_id
+                """,
+            ).fetchall()
+        return [(r["chunk_id"], r["conversation_id"], r["embedding"]) for r in rows]
+
     # --- generic ------------------------------------------------------------
 
     def vacuum(self) -> None:
@@ -706,6 +892,7 @@ def _row_to_chunk(row) -> Chunk:
 
 
 def _row_to_derived(row) -> DerivedObject:
+    keys = row.keys() if hasattr(row, "keys") else []
     return DerivedObject(
         object_id=row["object_id"],
         kind=row["kind"],
@@ -716,6 +903,13 @@ def _row_to_derived(row) -> DerivedObject:
         canonical_key=row["canonical_key"] or "",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        entity_type=row["entity_type"] if "entity_type" in keys else None,
+        source_register=row["source_register"] if "source_register" in keys else None,
+        source_reality_mode=row["source_reality_mode"] if "source_reality_mode" in keys else None,
+        paraphrase=row["paraphrase"] if "paraphrase" in keys else None,
+        first_seen=row["first_seen"] if "first_seen" in keys else None,
+        last_seen=row["last_seen"] if "last_seen" in keys else None,
+        status=row["status"] if "status" in keys else None,
     )
 
 

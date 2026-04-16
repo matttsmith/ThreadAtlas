@@ -64,7 +64,7 @@ _PREFIX_RE = re.compile(
 )
 
 _KNOWN_PREFIXES = frozenset({
-    "source", "tag", "kind", "project", "after", "before", "has",
+    "source", "tag", "kind", "project", "after", "before", "has", "register",
 })
 
 _VALID_KINDS = frozenset(k.value for k in DerivedKind)
@@ -94,6 +94,7 @@ class QueryFilter:
     after: float | None = None
     before: float | None = None
     has_flags: list[str] = field(default_factory=list)
+    registers: list[str] = field(default_factory=list)
     text: str = ""
 
     def to_dict(self) -> dict:
@@ -146,6 +147,8 @@ def parse_query(raw: str) -> QueryFilter:
             v = val.lower()
             if v in _HAS_FLAGS:
                 filt.has_flags.append(v)
+        elif key == "register":
+            filt.registers.append(val.lower())
 
     # Trailing text after the last prefix match.
     trailing = raw[pos:].strip()
@@ -463,11 +466,16 @@ def query(
 
     has_text = bool(filt.text)
 
+    reg_filter = filt.registers if filt.registers else None
+    src_filter = filt.sources[0] if len(filt.sources) == 1 else None
+
     # --- Conversation search ---
     if search_conversations_flag:
         if has_text:
             conv_hits = search_conversations(
                 store, filt.text, visible_states=vs, limit=limit * 2,
+                after=filt.after, before=filt.before,
+                register=reg_filter, source_filter=src_filter,
             )
             conv_hits = _apply_conversation_filters(store, conv_hits, filt)
             if project_cids is not None:
@@ -494,6 +502,8 @@ def query(
     if search_chunks_flag and has_text:
         chunk_hits = search_chunks(
             store, filt.text, visible_states=vs, limit=limit,
+            after=filt.after, before=filt.before,
+            register=reg_filter, source_filter=src_filter,
         )
         if project_cids is not None:
             chunk_hits = [h for h in chunk_hits if h.conversation_id in project_cids]

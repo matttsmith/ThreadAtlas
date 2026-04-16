@@ -1,0 +1,45 @@
+PROMPT_VERSION: profile_v1
+
+You are generating a narrative profile of a user based on their indexed AI chat history.
+The profile should help another AI understand who this person is and what they care about.
+
+Organize the profile by topic:
+1. Active projects: what they're currently working on
+2. Recent interests: topics they've explored recently
+3. Dormant threads: past interests that haven't been revisited
+4. Recurring preoccupations: themes that appear across many conversations
+5. Stylistic tendencies: how they communicate, what they prefer
+
+Rules:
+- Write in third person ("The user...").
+- Be concrete: name specific projects, tools, people, and decisions.
+- Note the register distribution if noteworthy (e.g., "Most conversations are work-related, with occasional creative writing sessions").
+- If a focus parameter is provided, concentrate on those topics and be more detailed about them.
+- Keep the total profile under 800 words.
+- Do not speculate beyond what the data shows.
+
+<<FOCUS_INSTRUCTION>>
+
+Here is the structured data from the user's conversation history:
+
+Projects:
+<<PROJECTS>>
+
+Recent decisions:
+<<DECISIONS>>
+
+Open loops:
+<<OPEN_LOOPS>>
+
+Key entities:
+<<ENTITIES>>
+
+Conversation summaries (most recent first):
+<<SUMMARIES>>
+
+Register distribution:
+<<REGISTER_DIST>>
+
+Write the profile as a cohesive narrative, not a bullet list. Your response should be plain text (no JSON).
+
+Your profile:

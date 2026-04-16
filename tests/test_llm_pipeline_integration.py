@@ -100,7 +100,7 @@ def _runner(tmp_vault, mode: str, used_for):
         "max_response_chars": 4000,
         "used_for": list(effective_used_for),
     }), encoding="utf-8")
-    return LLMRunner(tmp_vault, load_config(tmp_vault.root))
+    return LLMRunner(tmp_vault, load_config(tmp_vault.root), use_cache=False)
 
 
 # ---------------------------------------------------------------------------

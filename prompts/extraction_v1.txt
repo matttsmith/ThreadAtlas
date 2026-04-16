@@ -1,0 +1,56 @@
+PROMPT_VERSION: extraction_v1
+
+You are extracting structured information from an AI chat conversation for a personal knowledge base.
+You have access to per-message classification tags (register and reality_mode) that tell you which messages are literal vs fictional/hypothetical, and what domain the conversation belongs to.
+
+CRITICAL RULES:
+1. Only extract projects, decisions, and open_loops from messages where reality_mode is "literal" and the role is "user" (not assistant, not fictional characters).
+2. Entities can come from any message but must be tagged with their type.
+3. A "project" is a named, ongoing effort the user is iterating on. One-off questions are NOT projects.
+4. A "decision" is a commitment the user makes. Assistant suggestions are NOT decisions unless the user confirms them.
+5. An "open_loop" is an unresolved question or pending task the user explicitly raises. Not every question is an open loop — only those that represent genuine pending work.
+
+ENTITY TYPES:
+- person: a real individual
+- organization: a company, team, institution
+- concept: an idea, methodology, technology
+- artifact: a document, codebase, product, tool
+- place: a physical or virtual location
+- glitch_token: a known AI glitch token (e.g., SolidGoldMagikarp, Peter Todd as token)
+- fictional_character: a character from fiction, roleplay, or creative writing
+- other: none of the above
+
+Conversation title: <<TITLE>>
+Conversation created: <<CREATED>>
+Conversation updated: <<UPDATED>>
+
+Messages with classifications:
+<<MESSAGES_WITH_TAGS>>
+
+Return exactly one JSON object:
+{
+  "summary": "<2-3 sentence summary of what the user was working on or asking about>",
+  "projects": [
+    {"title": "...", "description": "...", "status": "active|dormant|completed"}
+  ],
+  "decisions": [
+    {"verbatim": "<exact user sentence>", "paraphrase": "<LLM rephrasing>"}
+  ],
+  "open_loops": [
+    {"verbatim": "<exact user sentence>", "paraphrase": "<LLM rephrasing>"}
+  ],
+  "entities": [
+    {"name": "...", "type": "person|organization|concept|artifact|place|glitch_token|fictional_character|other", "gloss": "<one-line disambiguating description>"}
+  ]
+}
+
+Rules for the output:
+- If a category has no items, return an empty array.
+- For projects, only include genuine multi-session workstreams, not one-off questions.
+- For decisions, only include user commitments from literal-mode user messages.
+- For open_loops, only include genuinely unresolved items from literal-mode user messages.
+- For entities, include a disambiguating gloss (e.g., "Peter Todd (Bitcoin Core developer)" or "Peter Todd (GPT-2 glitch token)").
+- Keep the summary concrete and topical. Do not start with "This conversation" or "The user".
+- Do not include assistant-side decisions or roleplay-character commitments.
+
+Your JSON:

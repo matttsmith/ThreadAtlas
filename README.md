@@ -18,14 +18,20 @@ knowledge base. It:
 - **Partitions** conversations by sensitivity via an explicit review
   workflow: `pending_review`, `indexed`, `private`, `quarantined`, or hard
   `deleted`.
-- **Searches** locally with SQLite FTS5 over titles, summaries, messages,
-  and chunks; CLI + MCP surfaces respect the visibility rules.
+- **Searches** locally with hybrid keyword (FTS5) + semantic (TF-IDF
+  embeddings) search, merged via reciprocal rank fusion. CLI + MCP
+  surfaces respect the visibility rules.
 - **Chunks** long threads into thematic segments using a deterministic
   heuristic, optionally refined by a local LLM (merge-only; the LLM can
   never introduce new splits).
-- **Extracts** a small, inspectable set of derived objects — projects,
-  entities, decisions, open loops, artifacts, preferences — each with
-  provenance excerpts.
+- **Classifies** each message by register (work, research, roleplay,
+  creative_writing, etc.) and reality_mode (literal, fictional,
+  hypothetical) via a local LLM, so roleplay and jailbreak content is
+  automatically separated from substantive work.
+- **Extracts** projects, entities, decisions, open loops, artifacts, and
+  preferences — via LLM when configured, or deterministic regex
+  heuristics as fallback — each with provenance excerpts and type
+  disambiguation.
 - **Clusters** your corpus into coarse + fine thematic groups via
   pure-Python TF-IDF + k-means, with optional local-LLM naming.
 - **Summarizes** conversations via an optional local LLM subprocess.
@@ -214,7 +220,8 @@ endpoint) over loopback. Start the server separately, then configure:
   "timeout_seconds": 120,
   "max_prompt_chars": 12000,
   "max_response_chars": 4000,
-  "used_for": ["summaries", "group_naming", "chunk_gating"],
+  "used_for": ["summaries", "group_naming", "chunk_gating",
+               "turn_classification", "extraction", "profile"],
   "dry_run": false
 }
 ```
@@ -231,6 +238,27 @@ threadatlas summarize ./vault                    # 2-3 sentence summaries
 threadatlas group ./vault --llm-names            # prose cluster names
 threadatlas llm-chunk ./vault                    # refine chunk boundaries
 ```
+
+### v2 LLM tasks
+
+The v2 pipeline adds three new LLM task types (opt-in via `used_for`):
+
+- **`turn_classification`**: Classifies each message by register (work,
+  research, career_logistics, creative_writing, roleplay,
+  jailbreak_experiment, puzzle_hobby, personal, other) and reality_mode
+  (literal, fictional, hypothetical). This is the single highest-value
+  change — it filters roleplay and fictional content from substantive
+  extractions.
+- **`extraction`**: Replaces regex heuristics with LLM-based extraction
+  of projects, decisions, open loops, and entities. Respects the
+  per-turn classifications to avoid extracting fictional commitments.
+- **`profile`**: Generates a narrative user profile on demand, organized
+  by topic (active projects, recent interests, dormant threads,
+  recurring preoccupations, stylistic tendencies).
+
+Prompts are stored in the `prompts/` directory as versioned text files.
+Each extraction logs the prompt version used, enabling clean re-runs when
+prompts improve.
 
 ### Safeguards
 
@@ -260,9 +288,10 @@ threadatlas/
   ingest/      parser registry (ChatGPT + Claude) + import pipeline
   store/       SQLite + FTS5 schema + normalized JSON IO
   extract/     deterministic chunking + heuristic derived objects
-  search/      keyword search + project synthesis + timeline
+  search/      hybrid keyword+semantic search, embeddings, project synthesis
   cluster/     TF-IDF + k-means grouping (stdlib, deterministic)
-  llm/         optional local-LLM integration: subprocess + llama_server backends
+  llm/         local-LLM: subprocess + llama_server backends, 2-pass pipeline, profile gen
+  prompts/     versioned prompt files for LLM tasks (turn classification, extraction, profile)
   export/      XLSX workbook profiles
   mcp/         stdio JSON-RPC server (read-only, indexed-only)
   tui/         curses dashboard (read-only, responsive)
@@ -299,6 +328,60 @@ Claude sees.
 
 ---
 
+## MCP tool surface
+
+All tools are read-only by default and expose only `indexed` conversations.
+
+### Search & query
+
+| Tool | Description |
+|---|---|
+| `query` | Structured hybrid search with filter prefixes: `source:`, `tag:`, `kind:`, `project:`, `after:`, `before:`, `has:`, `register:`. |
+| `search_conversations` | Hybrid keyword + semantic search over conversations. |
+| `search_chunks` | Keyword search over thematic chunks. |
+| `find_related` | Semantic similarity search given free-text context. |
+
+### Conversation detail
+
+| Tool | Description |
+|---|---|
+| `get_conversation_summary` | LLM-generated summary + register classification + metadata. |
+| `get_conversation_messages` | Raw messages for one conversation. |
+| `get_conversation_chunks` | Thematic chunks for one conversation. |
+
+### Structured data
+
+| Tool | Description |
+|---|---|
+| `list_projects` | Active projects (auto-excludes roleplay/jailbreak). |
+| `get_project` | Project page: linked conversations, decisions, open loops, entities. |
+| `get_project_timeline` | Chronological timeline for a project. |
+| `list_decisions` | User commitments from literal-mode conversations. |
+| `list_open_loops` | Unresolved tasks/questions from literal-mode conversations. |
+| `list_entities` | People, orgs, concepts, artifacts with type disambiguation. |
+| `list_groups` | Thematic conversation clusters. |
+| `get_group` | Group detail with indexed members. |
+
+### Profile & audit
+
+| Tool | Description |
+|---|---|
+| `generate_profile` | Narrative user profile organized by topic. Cached 7 days. Optional `focus` parameter. |
+| `inspect_conversation_storage` | Metadata-only audit of stored data. |
+
+### Common filter parameters
+
+All `list_*` and `search_*` tools accept these optional filters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `after` | ISO date string | Only include items after this date. |
+| `before` | ISO date string | Only include items before this date. |
+| `register` | array of strings | Filter by conversation register. Defaults exclude `roleplay` and `jailbreak_experiment`. |
+| `source` | `chatgpt` \| `claude` \| `all` | Filter by conversation source. |
+
+---
+
 ## Hard delete semantics
 
 `threadatlas delete <vault> <conv_id>` physically removes:
@@ -320,11 +403,15 @@ deleted content.
 
 ## Tests and CI
 
-The suite has ~180 tests covering parsing, state transitions, visibility
+The suite has ~395 tests covering parsing, state transitions, visibility
 boundaries, hard-delete cascade, chunking, heuristic extraction, search
 ranking, XLSX schema stability, MCP tool behavior, LLM subprocess runner,
 TF-IDF + k-means determinism, full LLM pipeline integration against a
-smart fake, and a static no-network enforcement check.
+smart fake, v2 LLM pipeline (turn classification, extraction, content
+hashing), embedding generation and hybrid search, reciprocal rank fusion,
+register/date filtering, new MCP tools (profile, find_related), prompt
+loading and versioning, schema migration, and a static no-network
+enforcement check.
 
 ```
 pytest -q
@@ -377,9 +464,10 @@ shape.
 `extract/heuristics.py`, add an XLSX sheet builder and a test. Keep the
 precision bar high.
 
-**Tweak the LLM prompts**: `threadatlas/llm/prompts.py`. Every prompt is
-in one file for audit. Use the `dry_run: true` config to preview without
-sending.
+**Tweak the LLM prompts**: v2 prompts live in the `prompts/` directory as
+versioned text files. Legacy prompts remain in `threadatlas/llm/prompts.py`.
+Each prompt includes a `PROMPT_VERSION:` header; the pipeline logs which
+version was used for each extraction. Use `dry_run: true` to preview.
 
 ---
 

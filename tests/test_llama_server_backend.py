@@ -211,7 +211,7 @@ def test_run_dry_run_skips_http(tmp_vault):
     """dry_run should never make HTTP calls."""
     cfg = _llama_config(dry_run=True)
     from threadatlas.llm.runner import LLMRunner
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     # If HTTP were called, this would fail since there's no mock.
     resp = runner.run("summaries", "test prompt")
     assert resp.success is True

@@ -30,7 +30,7 @@ def _write_config(vault, *, mode: str, timeout: int = 10, used_for=("summaries",
 def test_dry_run_does_not_invoke_subprocess(tmp_vault):
     _write_config(tmp_vault, mode="nonzero", dry_run=True)
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     resp = runner.run("summaries", "hello")
     # Dry-run treats the prompt as the response, never invokes the subprocess,
     # so even a "nonzero" mode would succeed. That's the invariant we want.
@@ -41,7 +41,7 @@ def test_dry_run_does_not_invoke_subprocess(tmp_vault):
 def test_success_path(tmp_vault):
     _write_config(tmp_vault, mode="summary_ok")
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     resp = runner.run("summaries", "make a summary")
     assert resp.success
     parsed = parse_json_response(resp)
@@ -51,7 +51,7 @@ def test_success_path(tmp_vault):
 def test_nonzero_exit_is_not_success(tmp_vault):
     _write_config(tmp_vault, mode="nonzero")
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     resp = runner.run("summaries", "any")
     assert resp.success is False
     assert resp.error and "exit=1" in resp.error
@@ -60,7 +60,7 @@ def test_nonzero_exit_is_not_success(tmp_vault):
 def test_timeout_caps_subprocess(tmp_vault):
     _write_config(tmp_vault, mode="hang", timeout=1)
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     resp = runner.run("summaries", "any")
     assert resp.success is False
     assert resp.error == "timeout"
@@ -69,7 +69,7 @@ def test_timeout_caps_subprocess(tmp_vault):
 def test_refuses_unauthorized_task(tmp_vault):
     _write_config(tmp_vault, mode="summary_ok", used_for=("summaries",))
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     with pytest.raises(Exception):  # LLMError
         runner.run("chunk_gating", "any")
 
@@ -77,7 +77,7 @@ def test_refuses_unauthorized_task(tmp_vault):
 def test_log_file_written(tmp_vault):
     _write_config(tmp_vault, mode="summary_ok")
     cfg = load_config(tmp_vault.root)
-    runner = LLMRunner(tmp_vault, cfg)
+    runner = LLMRunner(tmp_vault, cfg, use_cache=False)
     runner.run("summaries", "any", conversation_ids=["conv_abc"])
     log_path = tmp_vault.logs / "llm_calls.jsonl"
     assert log_path.exists()
