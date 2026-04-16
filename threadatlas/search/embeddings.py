@@ -10,6 +10,7 @@ standard library, which aligns with ThreadAtlas's design principles.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import struct
@@ -50,7 +51,14 @@ def _tokenize(text: str) -> list[str]:
 
 
 class TFIDFEmbedder:
-    """Build a fixed-dimension TF-IDF embedding from a corpus of documents."""
+    """Build a fixed-dimension TF-IDF embedding from a corpus of documents.
+
+    The vocabulary and IDF weights are serializable so the same embedder
+    used at index time can be reloaded at query time. This is critical:
+    query-time embeddings must use the exact same vocabulary mapping as
+    the stored chunk embeddings, otherwise the cosine similarities are
+    meaningless.
+    """
 
     def __init__(self):
         self.vocab: dict[str, int] = {}
@@ -77,6 +85,19 @@ class TFIDFEmbedder:
             self.idf[term] = math.log((n_docs + 1) / (df + 1)) + 1.0
 
         self._fitted = True
+
+    def to_dict(self) -> dict:
+        """Serialize the embedder state so it can be persisted."""
+        return {"vocab": self.vocab, "idf": self.idf}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TFIDFEmbedder:
+        """Restore an embedder from a previously serialized state."""
+        e = cls()
+        e.vocab = data.get("vocab", {})
+        e.idf = data.get("idf", {})
+        e._fitted = bool(e.vocab)
+        return e
 
     def embed(self, text: str) -> list[float]:
         """Generate a TF-IDF embedding vector for a single document."""
@@ -150,6 +171,42 @@ def reciprocal_rank_fusion(
 
 
 # ---------------------------------------------------------------------------
+# Embedder persistence
+# ---------------------------------------------------------------------------
+
+_EMBEDDER_STATE_KEY = "tfidf_embedder_state"
+
+
+def save_embedder_state(store: Store, embedder: TFIDFEmbedder) -> None:
+    """Persist the embedder vocabulary and IDF weights in the database.
+
+    This must be called after building embeddings so that query-time code
+    can load the exact same embedder that was used to generate the stored
+    chunk embeddings.
+    """
+    state_json = json.dumps(embedder.to_dict())
+    store.conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+        (_EMBEDDER_STATE_KEY, state_json),
+    )
+
+
+def load_embedder_state(store: Store) -> TFIDFEmbedder | None:
+    """Load a previously persisted embedder. Returns None if not found."""
+    row = store.conn.execute(
+        "SELECT value FROM schema_meta WHERE key = ?",
+        (_EMBEDDER_STATE_KEY,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        data = json.loads(row["value"])
+        return TFIDFEmbedder.from_dict(data)
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Index-time embedding generation
 # ---------------------------------------------------------------------------
 
@@ -188,22 +245,23 @@ def build_embeddings_for_conversation(
 
 
 def fit_embedder_from_corpus(store: Store) -> TFIDFEmbedder:
-    """Build a TF-IDF embedder fitted on the entire visible corpus."""
-    eligible_states = ",".join(f"'{s}'" for s in EXTRACTABLE_STATES)
-    rows = store.conn.execute(
-        f"""
-        SELECT m.content_text
-          FROM messages m
-          JOIN conversations c ON c.conversation_id = m.conversation_id
-         WHERE c.state IN ({eligible_states})
-           AND m.role IN ('user', 'assistant')
-        """,
-    ).fetchall()
+    """Build a TF-IDF embedder fitted on the entire visible corpus.
 
-    # Group messages by conversation for document-level IDF.
+    Prefer loading the persisted embedder state (which matches the stored
+    chunk embeddings). Falls back to re-fitting if no state is saved.
+    """
+    # Try to load the persisted embedder first.
+    saved = load_embedder_state(store)
+    if saved is not None:
+        return saved
+
+    # Fallback: re-fit from corpus (embeddings may not exist yet, or
+    # state was never persisted).
+    eligible_states = ",".join(f"'{s}'" for s in EXTRACTABLE_STATES)
+
     conv_rows = store.conn.execute(
         f"""
-        SELECT c.conversation_id, c.title, c.summary_short
+        SELECT c.conversation_id
           FROM conversations c
          WHERE c.state IN ({eligible_states})
         """,
@@ -225,16 +283,39 @@ def fit_embedder_from_corpus(store: Store) -> TFIDFEmbedder:
 
 
 def build_all_embeddings(store: Store) -> int:
-    """Build embeddings for all chunks across all eligible conversations."""
-    embedder = fit_embedder_from_corpus(store)
+    """Build embeddings for all chunks across all eligible conversations.
 
+    Fits the embedder from the current corpus, persists its state, then
+    generates embeddings for all chunks. The persisted state ensures that
+    query-time embedding uses the same vocabulary as index-time.
+    """
+    # Always re-fit from corpus when building (the corpus may have changed).
     eligible_states = ",".join(f"'{s}'" for s in EXTRACTABLE_STATES)
-    rows = store.conn.execute(
+
+    conv_rows = store.conn.execute(
         f"SELECT conversation_id FROM conversations WHERE state IN ({eligible_states})"
     ).fetchall()
 
+    documents = []
+    conv_ids = []
+    for cr in conv_rows:
+        msg_rows = store.conn.execute(
+            "SELECT content_text FROM messages WHERE conversation_id = ? ORDER BY ordinal",
+            (cr["conversation_id"],),
+        ).fetchall()
+        doc_text = " ".join((r["content_text"] or "") for r in msg_rows)
+        documents.append(doc_text)
+        conv_ids.append(cr["conversation_id"])
+
+    embedder = TFIDFEmbedder()
+    if documents:
+        embedder.fit(documents)
+
+    # Persist the embedder state so query-time uses the same vocabulary.
+    save_embedder_state(store, embedder)
+
     total = 0
-    for r in rows:
-        total += build_embeddings_for_conversation(store, r["conversation_id"], embedder)
+    for cid in conv_ids:
+        total += build_embeddings_for_conversation(store, cid, embedder)
     store.conn.commit()
     return total

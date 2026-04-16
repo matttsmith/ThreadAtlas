@@ -38,6 +38,8 @@ from threadatlas.search.embeddings import (
     cosine_similarity,
     embedding_to_bytes,
     fit_embedder_from_corpus,
+    load_embedder_state,
+    save_embedder_state,
     reciprocal_rank_fusion,
 )
 from threadatlas.search.search import (
@@ -87,6 +89,23 @@ class TestTFIDFEmbedder:
         norm = math.sqrt(sum(v * v for v in vec))
         if norm > 0:
             assert abs(norm - 1.0) < 1e-6
+
+    def test_serialization_roundtrip(self):
+        docs = ["kubernetes deployment pods", "python machine learning"]
+        embedder = TFIDFEmbedder()
+        embedder.fit(docs)
+
+        state = embedder.to_dict()
+        restored = TFIDFEmbedder.from_dict(state)
+
+        assert restored._fitted
+        assert restored.vocab == embedder.vocab
+        assert restored.idf == embedder.idf
+
+        # Same embedding output.
+        v1 = embedder.embed("kubernetes pods")
+        v2 = restored.embed("kubernetes pods")
+        assert v1 == v2
 
     def test_similar_docs_have_higher_similarity(self):
         docs = [
@@ -268,6 +287,41 @@ class TestEmbeddingIntegration:
         embedder = fit_embedder_from_corpus(store)
         vec = embedder.embed("test")
         assert len(vec) == EMBEDDING_DIM
+        store.close()
+
+    def test_embedder_state_persisted_after_build(self, tmp_path):
+        vault, store, conv_ids = _setup_corpus(tmp_path)
+        build_all_embeddings(store)
+
+        # Embedder state should be persisted in the DB.
+        loaded = load_embedder_state(store)
+        assert loaded is not None
+        assert loaded._fitted
+        assert len(loaded.vocab) > 0
+
+        # Query-time fit_embedder_from_corpus should load persisted state.
+        query_embedder = fit_embedder_from_corpus(store)
+        assert query_embedder.vocab == loaded.vocab
+        assert query_embedder.idf == loaded.idf
+        store.close()
+
+    def test_embedder_persistence_matches_index_time(self, tmp_path):
+        """Verify that query-time embeddings use the same vector space as index-time."""
+        vault, store, conv_ids = _setup_corpus(tmp_path)
+        build_all_embeddings(store)
+
+        # Get the persisted embedder (same one used for chunk embeddings).
+        embedder = fit_embedder_from_corpus(store)
+
+        # Embed a query and compare against stored chunk embeddings.
+        query_vec = embedder.embed("kubernetes cluster migration")
+        all_embs = store.get_all_chunk_embeddings()
+        assert len(all_embs) > 0
+
+        # At least one chunk should have non-trivial similarity.
+        sims = [cosine_similarity(query_vec, bytes_to_embedding(emb))
+                for _, _, emb in all_embs]
+        assert max(sims) > 0.0
         store.close()
 
 
