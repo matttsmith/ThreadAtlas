@@ -126,9 +126,10 @@ def test_mcp_returns_indexed_only(tmp_vault, store, chatgpt_export_factory):
     ids = _seed_all_states(tmp_vault, store, chatgpt_export_factory)
     tools = build_tools(tmp_vault, store)
     import json as _json
-    result = tools["search_conversations"].fn({"query": UNIQUE_TOKEN, "limit": 20})
+    result = tools["query"].fn({"query": UNIQUE_TOKEN, "limit": 20})
     payload = _json.loads(result["content"][0]["text"])
-    returned = {p["conversation_id"] for p in payload}
+    conv_hits = [h for h in payload.get("hits", []) if h["hit_type"] == "conversation"]
+    returned = {h["id"] for h in conv_hits}
     assert returned == {ids["indexed"]}
 
 

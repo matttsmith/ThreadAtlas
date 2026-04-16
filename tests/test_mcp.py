@@ -46,14 +46,15 @@ def _call(tools, name, args):
     return handler.fn(args)
 
 
-def test_search_conversations_only_returns_indexed(tmp_vault, store, chatgpt_export_factory):
+def test_query_only_returns_indexed(tmp_vault, store, chatgpt_export_factory):
     cid_a, cid_b = _seed_indexed_and_private(tmp_vault, store, chatgpt_export_factory)
     tools = build_tools(tmp_vault, store)
-    result = _call(tools, "search_conversations", {"query": "anxious"})
+    result = _call(tools, "query", {"query": "anxious"})
     text = result["content"][0]["text"]
     payload = json.loads(text)
-    # No private content should appear.
-    assert all(item["conversation_id"] != cid_b for item in payload)
+    # No private content should appear in any hit.
+    for hit in payload.get("hits", []):
+        assert hit.get("id") != cid_b
 
 
 def test_get_conversation_summary_refuses_private(tmp_vault, store, chatgpt_export_factory):
@@ -73,17 +74,6 @@ def test_get_conversation_summary_allows_indexed(tmp_vault, store, chatgpt_expor
     assert payload["state"] == State.INDEXED.value
 
 
-def test_inspect_conversation_storage_redacts_title_for_private(tmp_vault, store, chatgpt_export_factory):
-    cid_a, cid_b = _seed_indexed_and_private(tmp_vault, store, chatgpt_export_factory)
-    tools = build_tools(tmp_vault, store)
-    result = _call(tools, "inspect_conversation_storage", {"conversation_id": cid_b})
-    payload = json.loads(result["content"][0]["text"])
-    assert payload["mcp_visible"] is False
-    assert payload["title"] == "[redacted]"
-    # Counts are still shown so the user can audit storage even for private.
-    assert payload["message_count"] >= 1
-
-
 def test_jsonrpc_initialize_and_tools_list(tmp_vault, store, chatgpt_export_factory):
     cid_a, cid_b = _seed_indexed_and_private(tmp_vault, store, chatgpt_export_factory)
     tools = build_tools(tmp_vault, store)
@@ -91,10 +81,15 @@ def test_jsonrpc_initialize_and_tools_list(tmp_vault, store, chatgpt_export_fact
     assert init["result"]["serverInfo"]["name"] == "threadatlas"
     listed = _handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, tools)
     names = {t["name"] for t in listed["result"]["tools"]}
-    assert "search_conversations" in names
+    assert "query" in names
     assert "get_project" in names
-    # No mutating tools in v1.
-    assert not any(n.startswith(("delete_", "set_", "approve_", "quarantine_")) for n in names)
+    assert "generate_profile" in names
+    assert "find_related" in names
+    # Removed tools should not be present.
+    assert "search_conversations" not in names
+    assert "search_chunks" not in names
+    assert "inspect_conversation_storage" not in names
+    assert "get_project_timeline" not in names
 
 
 def test_serve_respects_eof(tmp_vault, store, chatgpt_export_factory):
@@ -109,4 +104,4 @@ def test_serve_respects_eof(tmp_vault, store, chatgpt_export_factory):
     assert out
     payload = json.loads(out.splitlines()[0])
     assert "result" in payload
-    assert any(t["name"] == "search_conversations" for t in payload["result"]["tools"])
+    assert any(t["name"] == "query" for t in payload["result"]["tools"])

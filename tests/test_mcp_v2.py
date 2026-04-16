@@ -202,18 +202,18 @@ class TestMCPToolsV2:
         assert result.get("isError")
         store.close()
 
-    def test_search_with_filter_params(self, tmp_path):
+    def test_query_with_register_filter(self, tmp_path):
         vault, store, conv_ids = _setup_with_llm_meta(tmp_path)
         tools = build_tools(vault, store)
 
-        # Search with register filter.
-        result = tools["search_conversations"].fn({
-            "query": "architecture",
-            "register": ["work"],
+        # Query with register filter prefix.
+        result = tools["query"].fn({
+            "query": "architecture register:work",
         })
         content = json.loads(result["content"][0]["text"])
-        # Roleplay conversation should be filtered out.
-        cids = {h["conversation_id"] for h in content}
+        # Results should not include roleplay conversations.
+        conv_hits = [h for h in content.get("hits", []) if h["hit_type"] == "conversation"]
+        cids = {h["id"] for h in conv_hits}
         assert conv_ids["roleplay"] not in cids
         store.close()
 
@@ -240,15 +240,14 @@ class TestToolSchemas:
         store = open_store(vault)
         tools = build_tools(vault, store)
         expected_tools = {
-            "query", "search_conversations", "search_chunks",
+            "query",
             "get_conversation_summary", "get_conversation_messages",
             "get_conversation_chunks", "list_projects", "get_project",
-            "get_project_timeline", "list_open_loops", "list_decisions",
+            "list_open_loops", "list_decisions",
             "list_entities", "list_groups", "get_group",
-            "inspect_conversation_storage",
             "generate_profile", "find_related",
         }
-        assert expected_tools.issubset(set(tools.keys()))
+        assert expected_tools == set(tools.keys())
         store.close()
 
     def test_filter_properties_in_schemas(self, tmp_path):
@@ -257,7 +256,6 @@ class TestToolSchemas:
         tools = build_tools(vault, store)
 
         filterable_tools = [
-            "search_conversations", "search_chunks",
             "list_projects", "list_decisions", "list_open_loops", "list_entities",
         ]
         for name in filterable_tools:

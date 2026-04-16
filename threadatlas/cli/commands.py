@@ -544,6 +544,37 @@ def cmd_group_view(args) -> int:
     return 0
 
 
+def cmd_llm_extract(args) -> int:
+    """Run the v2 LLM extraction pipeline (classify + extract + summarize)."""
+    from ..llm.pipeline import run_pipeline, run_pipeline_all
+    from ..search.embeddings import build_all_embeddings
+
+    vault = open_vault(args.vault)
+    store = open_store(vault)
+    try:
+        runner = _require_llm_runner(vault, "extraction")
+        if args.conversation_id:
+            result = run_pipeline(vault, store, runner, args.conversation_id, force=args.force)
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            results = run_pipeline_all(vault, store, runner, force=args.force, limit=args.limit)
+            processed = sum(1 for r in results if not r.get("skipped"))
+            skipped = sum(1 for r in results if r.get("skipped"))
+            print(f"Processed: {processed}, Skipped: {skipped} (cached/unchanged)")
+            for r in results:
+                if not r.get("skipped") and r.get("counts"):
+                    c = r["counts"]
+                    total = sum(c.values())
+                    if total:
+                        print(f"  {r.get('dominant_register', '?')}: {c}")
+            # Rebuild embeddings after extraction.
+            n = build_all_embeddings(store)
+            print(f"Embeddings: rebuilt {n} chunk vectors")
+    finally:
+        store.close()
+    return 0
+
+
 def cmd_summarize(args) -> int:
     vault = open_vault(args.vault)
     store = open_store(vault)

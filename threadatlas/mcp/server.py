@@ -29,11 +29,8 @@ from ..search import (
     list_decisions,
     list_entities,
     list_open_loops,
-    project_timeline,
     project_view,
     query as query_engine,
-    search_chunks,
-    search_conversations,
 )
 from ..search.search import list_projects
 from ..store import open_store, Store
@@ -121,20 +118,6 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             "source_filter": args.get("source") if args.get("source") != "all" else None,
         }
 
-    def t_search_conversations(args: dict) -> dict:
-        q = str(args.get("query") or "")
-        limit = int(args.get("limit") or 25)
-        filters = _common_filters(args)
-        hits = search_conversations(store, q, visible_states=visible, limit=limit, **filters)
-        return _ok([h.__dict__ for h in hits])
-
-    def t_search_chunks(args: dict) -> dict:
-        q = str(args.get("query") or "")
-        limit = int(args.get("limit") or 25)
-        filters = _common_filters(args)
-        hits = search_chunks(store, q, visible_states=visible, limit=limit, **filters)
-        return _ok([h.__dict__ for h in hits])
-
     def t_get_conversation_summary(args: dict) -> dict:
         cid = str(args.get("conversation_id") or "")
         c = store.get_conversation(cid)
@@ -194,10 +177,6 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
         if view is None:
             return _err(f"No project visible with id {pid}")
         return _ok(view)
-
-    def t_get_project_timeline(args: dict) -> dict:
-        pid = str(args.get("project_id") or "")
-        return _ok(project_timeline(store, pid, visible_states=visible))
 
     def t_list_open_loops(args: dict) -> dict:
         filters = _common_filters(args)
@@ -334,38 +313,6 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
             "indexed_members": visible,
         })
 
-    def t_inspect_conversation_storage(args: dict) -> dict:
-        """Audit hook: what does the system store about this conversation?
-
-        Returns metadata only; refuses to expose content unless visible.
-        """
-        cid = str(args.get("conversation_id") or "")
-        c = store.get_conversation(cid)
-        if c is None:
-            return _err(f"Unknown conversation: {cid}")
-        # Always allow metadata-only inspection; never reveal text for non-visible.
-        msg_count = store.conn.execute(
-            "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
-            (cid,),
-        ).fetchone()["c"]
-        chunk_count = store.conn.execute(
-            "SELECT COUNT(*) AS c FROM chunks WHERE conversation_id = ?",
-            (cid,),
-        ).fetchone()["c"]
-        prov_count = store.conn.execute(
-            "SELECT COUNT(*) AS c FROM provenance_links WHERE conversation_id = ?",
-            (cid,),
-        ).fetchone()["c"]
-        return _ok({
-            "conversation_id": cid,
-            "title": c.title if c.state in MCP_VISIBLE_STATES else "[redacted]",
-            "state": c.state,
-            "message_count": msg_count,
-            "chunk_count": chunk_count,
-            "provenance_link_count": prov_count,
-            "mcp_visible": c.state in MCP_VISIBLE_STATES,
-        })
-
     def t_query(args: dict) -> dict:
         """Structured query across all indexed material.
 
@@ -401,9 +348,9 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
     fp = dict(_FILTER_PROPERTIES)
 
     tools = [
-        _Tool("query", "Structured query across all indexed material. "
+        _Tool("query", "Search across all indexed conversations, chunks, and derived objects. "
               "Supports filter prefixes: source:, tag:, kind:, project:, after:, before:, has:, register:. "
-              "Remaining text is used for hybrid keyword + semantic search. Returns conversations, chunks, and derived objects.",
+              "Uses hybrid keyword + semantic matching.",
               {"type": "object",
                "properties": {
                    "query": {"type": "string",
@@ -412,62 +359,44 @@ def build_tools(vault: Vault, store: Store) -> dict[str, _Tool]:
                    "limit": {"type": "integer", "description": "Max results (default 25)"}},
                "required": ["query"]},
               t_query),
-        _Tool("search_conversations", "Hybrid keyword + semantic search over indexed conversations. "
-              "Finds both exact keyword matches and semantically similar content.",
-              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, **fp}, "required": ["query"]},
-              t_search_conversations),
-        _Tool("search_chunks", "Keyword search over chunks of indexed conversations.",
-              {"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}, **fp}, "required": ["query"]},
-              t_search_chunks),
-        _Tool("get_conversation_summary", "Get LLM-generated summary and metadata for one indexed conversation. "
-              "Includes register classification, importance score, and structured summary.",
+        _Tool("get_conversation_summary", "Get LLM-generated summary, register classification, and metadata for one conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_get_conversation_summary),
-        _Tool("get_conversation_messages", "Get messages for one indexed conversation.",
+        _Tool("get_conversation_messages", "Get messages for one conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["conversation_id"]},
               t_get_conversation_messages),
-        _Tool("get_conversation_chunks", "Get chunks for one indexed conversation.",
+        _Tool("get_conversation_chunks", "Get thematic chunks for one conversation.",
               {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
               t_get_conversation_chunks),
-        _Tool("list_projects", "List active projects derived from indexed material. "
-              "By default excludes roleplay and jailbreak content.",
+        _Tool("list_projects", "List active projects. Excludes roleplay/jailbreak by default.",
               {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_projects),
-        _Tool("get_project", "Get a project page (linked conversations + decisions + open loops + entities).",
+        _Tool("get_project", "Project page: linked conversations, decisions, open loops, entities.",
               {"type": "object", "properties": {"project_id": {"type": "string"}}, "required": ["project_id"]},
               t_get_project),
-        _Tool("get_project_timeline", "Timeline of conversations linked to a project.",
-              {"type": "object", "properties": {"project_id": {"type": "string"}}, "required": ["project_id"]},
-              t_get_project_timeline),
-        _Tool("list_open_loops", "List currently open loops across indexed material. "
-              "By default excludes roleplay and jailbreak content.",
+        _Tool("list_open_loops", "Unresolved tasks and questions. Excludes roleplay/jailbreak by default.",
               {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_open_loops),
-        _Tool("list_decisions", "List decisions across indexed material. "
-              "By default excludes roleplay and jailbreak content.",
+        _Tool("list_decisions", "User commitments and choices. Excludes roleplay/jailbreak by default.",
               {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_decisions),
-        _Tool("list_entities", "List recurring entities across indexed material with type disambiguation.",
+        _Tool("list_entities", "People, organizations, concepts, and artifacts with type disambiguation.",
               {"type": "object", "properties": {"limit": {"type": "integer"}, **fp}},
               t_list_entities),
-        _Tool("list_groups", "List thematic conversation groups (broad/fine) with visible (indexed) member counts.",
+        _Tool("list_groups", "Thematic conversation clusters (broad/fine) with visible member counts.",
               {"type": "object", "properties": {"level": {"type": "string", "enum": ["broad", "fine"]}}},
               t_list_groups),
-        _Tool("get_group", "Show one group with its indexed members (no private/quarantined/pending leakage).",
+        _Tool("get_group", "One cluster with its indexed member conversations.",
               {"type": "object", "properties": {"group_id": {"type": "string"}}, "required": ["group_id"]},
               t_get_group),
-        _Tool("inspect_conversation_storage", "Metadata-only audit of what is stored for a conversation.",
-              {"type": "object", "properties": {"conversation_id": {"type": "string"}}, "required": ["conversation_id"]},
-              t_inspect_conversation_storage),
-        _Tool("generate_profile", "Generate a narrative profile of the indexed user organized by topic: "
-              "active projects, recent interests, dormant threads, recurring preoccupations, stylistic tendencies. "
-              "Cached with 7-day TTL.",
+        _Tool("generate_profile", "Narrative profile of the indexed user: active projects, recent interests, "
+              "dormant threads, recurring preoccupations, stylistic tendencies. Cached 7 days.",
               {"type": "object", "properties": {
                   "focus": {"type": "array", "items": {"type": "string"},
-                            "description": "Optional list of topics to focus the profile on."}}},
+                            "description": "Optional topics to focus on."}}},
               t_generate_profile),
-        _Tool("find_related", "Find past conversations most relevant to a given context description. "
-              "Uses semantic similarity for proactive surfacing when current work resembles past conversations.",
+        _Tool("find_related", "Find past conversations most relevant to a description of current context. "
+              "Semantic similarity for proactive surfacing.",
               {"type": "object", "properties": {
                   "context": {"type": "string",
                               "description": "Free-text description of current context "

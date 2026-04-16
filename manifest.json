@@ -55,71 +55,55 @@
   "tools": [
     {
       "name": "query",
-      "description": "Structured hybrid search across all indexed material with filter prefixes"
-    },
-    {
-      "name": "search_conversations",
-      "description": "Hybrid keyword + semantic search over indexed conversations"
-    },
-    {
-      "name": "search_chunks",
-      "description": "Keyword search over chunks of indexed conversations"
+      "description": "Hybrid keyword + semantic search across conversations, chunks, and derived objects with filter prefixes"
     },
     {
       "name": "get_conversation_summary",
-      "description": "Get LLM-generated summary and metadata for one indexed conversation"
+      "description": "LLM-generated summary, register classification, and metadata for one conversation"
     },
     {
       "name": "get_conversation_messages",
-      "description": "Get messages for one indexed conversation"
+      "description": "Get messages for one conversation"
     },
     {
       "name": "get_conversation_chunks",
-      "description": "Get chunks for one indexed conversation"
+      "description": "Get thematic chunks for one conversation"
     },
     {
       "name": "list_projects",
-      "description": "List active projects derived from indexed material"
+      "description": "List active projects (excludes roleplay/jailbreak by default)"
     },
     {
       "name": "get_project",
-      "description": "Get a project page with linked conversations, decisions, open loops, and entities"
-    },
-    {
-      "name": "get_project_timeline",
-      "description": "Timeline of conversations linked to a project"
+      "description": "Project page with linked conversations, decisions, open loops, and entities"
     },
     {
       "name": "list_open_loops",
-      "description": "List currently open loops across indexed material"
+      "description": "Unresolved tasks and questions"
     },
     {
       "name": "list_decisions",
-      "description": "List decisions across indexed material"
+      "description": "User commitments and choices"
     },
     {
       "name": "list_entities",
-      "description": "List recurring entities with type disambiguation across indexed material"
+      "description": "People, organizations, concepts, artifacts with type disambiguation"
     },
     {
       "name": "list_groups",
-      "description": "List thematic conversation groups with visible member counts"
+      "description": "Thematic conversation clusters"
     },
     {
       "name": "get_group",
-      "description": "Show one group with its indexed members"
+      "description": "One cluster with its indexed member conversations"
     },
     {
       "name": "generate_profile",
-      "description": "Generate a narrative profile of the indexed user organized by topic"
+      "description": "Narrative profile of the indexed user organized by topic"
     },
     {
       "name": "find_related",
       "description": "Find past conversations most relevant to a given context description"
-    },
-    {
-      "name": "inspect_conversation_storage",
-      "description": "Metadata-only audit of what is stored for a conversation"
     }
   ]
 }

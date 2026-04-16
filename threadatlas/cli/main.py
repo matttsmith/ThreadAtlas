@@ -192,6 +192,21 @@ def _build_parser() -> argparse.ArgumentParser:
     s.set_defaults(handler=cmd.cmd_summarize)
 
     s = sub.add_parser(
+        "llm-extract",
+        help="Run v2 LLM extraction pipeline: classify turns by register/reality, "
+             "extract projects/decisions/open_loops/entities, generate summaries. "
+             "Cached; skips unchanged conversations.",
+    )
+    s.add_argument("vault", type=Path)
+    s.add_argument("--conversation-id", default=None,
+                   help="If set, extract only this conversation")
+    s.add_argument("--limit", type=int, default=None,
+                   help="Max conversations to process in this run")
+    s.add_argument("--force", action="store_true",
+                   help="Re-extract even conversations with unchanged content")
+    s.set_defaults(handler=cmd.cmd_llm_extract)
+
+    s = sub.add_parser(
         "llm-chunk",
         help="Refine chunk boundaries with the configured local LLM (merges only; never adds splits)",
     )
