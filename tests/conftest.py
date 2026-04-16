@@ -16,6 +16,7 @@ from threadatlas.core.vault import Vault, init_vault
 from threadatlas.store import open_store
 
 
+
 # ---------------------------------------------------------------------------
 # Fresh per-test vault.
 # ---------------------------------------------------------------------------
