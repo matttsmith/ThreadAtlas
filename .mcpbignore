@@ -1,0 +1,38 @@
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/
+
+# Documentation (not needed at runtime)
+docs/
+*.md
+LICENSE
+
+# CI
+.github/
+
+# Build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+
+# Dev/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Vault data (never bundle user data)
+vault*/
+*.db
+*.jsonl
+
+# Coverage
+.coverage
+htmlcov/

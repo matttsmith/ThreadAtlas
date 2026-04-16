@@ -1,0 +1,113 @@
+{
+  "manifest_version": "0.4",
+  "name": "threadatlas",
+  "display_name": "ThreadAtlas",
+  "version": "0.1.0",
+  "description": "Fully local conversation intelligence for your ChatGPT and Claude exports. Search, cluster, and query your AI chat history without any outbound network requests.",
+  "long_description": "ThreadAtlas turns your exported AI chats into a searchable, trustworthy local knowledge base. Import ChatGPT and Claude exports, review and approve conversations through an explicit privacy workflow, then let Claude query the approved corpus via MCP.\n\nKey capabilities:\n- Search conversations, chunks, projects, entities, decisions, and open loops\n- Thematic clustering with deterministic TF-IDF + k-means\n- Privacy-first: only explicitly approved (indexed) conversations are visible to Claude\n- Hard delete physically removes all traces\n- Optional local LLM integration for summaries and group naming\n\nAll data stays on your machine. No cloud APIs, no outbound connections.",
+  "author": {
+    "name": "ThreadAtlas"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/matttsmith/threadatlas"
+  },
+  "homepage": "https://github.com/matttsmith/threadatlas",
+  "keywords": [
+    "conversation",
+    "search",
+    "privacy",
+    "chatgpt",
+    "claude",
+    "local",
+    "export",
+    "knowledge-base"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory", "${__dirname}",
+        "server/main.py",
+        "--vault", "${user_config.vault_directory}"
+      ]
+    }
+  },
+  "user_config": {
+    "vault_directory": {
+      "type": "directory",
+      "title": "Vault Directory",
+      "description": "Path to your ThreadAtlas vault. Create one first with: threadatlas init <path>",
+      "required": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "python": ">=3.10.0 <4"
+    }
+  },
+  "tools": [
+    {
+      "name": "search_conversations",
+      "description": "Keyword search over indexed conversations"
+    },
+    {
+      "name": "search_chunks",
+      "description": "Keyword search over chunks of indexed conversations"
+    },
+    {
+      "name": "get_conversation_summary",
+      "description": "Get summary metadata for one indexed conversation"
+    },
+    {
+      "name": "get_conversation_messages",
+      "description": "Get messages for one indexed conversation"
+    },
+    {
+      "name": "get_conversation_chunks",
+      "description": "Get chunks for one indexed conversation"
+    },
+    {
+      "name": "list_projects",
+      "description": "List active projects derived from indexed material"
+    },
+    {
+      "name": "get_project",
+      "description": "Get a project page with linked conversations, decisions, open loops, and entities"
+    },
+    {
+      "name": "get_project_timeline",
+      "description": "Timeline of conversations linked to a project"
+    },
+    {
+      "name": "list_open_loops",
+      "description": "List currently open loops across indexed material"
+    },
+    {
+      "name": "list_decisions",
+      "description": "List decisions across indexed material"
+    },
+    {
+      "name": "list_entities",
+      "description": "List recurring entities across indexed material"
+    },
+    {
+      "name": "list_groups",
+      "description": "List thematic conversation groups with visible member counts"
+    },
+    {
+      "name": "get_group",
+      "description": "Show one group with its indexed members"
+    },
+    {
+      "name": "inspect_conversation_storage",
+      "description": "Metadata-only audit of what is stored for a conversation"
+    }
+  ]
+}

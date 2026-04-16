@@ -2,12 +2,32 @@
 
 ThreadAtlas ships a **stdio JSON-RPC MCP server** that any MCP-compatible
 host can launch. The most common host is **Claude Desktop** (the native
-Mac/Windows app from Anthropic). This doc walks through the setup
-end-to-end and covers verification + troubleshooting.
+Mac/Windows app from Anthropic).
 
-If you are using a different MCP host (Claude Code, an IDE extension,
-another desktop client), the principles are the same: you tell the host
-to launch `threadatlas mcp <vault>` as a subprocess on stdio.
+## Quickest path: desktop extension
+
+ThreadAtlas ships as a Claude Desktop extension (`.mcpb` file). This is
+the easiest install:
+
+1. Build the extension (requires `mcpb` CLI):
+   ```bash
+   npm install -g @anthropic-ai/mcpb
+   mcpb pack . threadatlas.mcpb
+   ```
+2. In Claude Desktop, go to **Settings > Extensions > Advanced settings**.
+3. Click **Install Extension** and select `threadatlas.mcpb`.
+4. When prompted, set the **Vault Directory** to your vault path.
+5. Done — the ThreadAtlas tools appear in your next conversation.
+
+The extension uses `uv` to auto-install Python and dependencies. No
+manual PATH or venv management needed.
+
+## Manual setup (alternative)
+
+If you prefer manual configuration, or are using a different MCP host
+(Claude Code, an IDE extension, another desktop client), the principles
+are the same: you tell the host to launch `threadatlas mcp <vault>` as
+a subprocess on stdio.
 
 ---
 
