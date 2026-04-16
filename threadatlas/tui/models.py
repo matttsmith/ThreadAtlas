@@ -322,14 +322,12 @@ def build_conversation_detail(vault: Vault, store: Store, conversation_id: str) 
     rows.append({"cells": [f"imported:  {_iso(c.imported_at)}"]})
     rows.append({"cells": [f"created:   {_iso(c.created_at)}"]})
     rows.append({"cells": [f"msgs:      {len(msgs)}   chunks: {len(chunks)}   provenance: {len(prov)}"]})
-    rows.append({"cells": [f"importance:{c.importance_score}   resurfacing: {c.resurfacing_score}"]})
+    rows.append({"cells": [f"importance:{c.importance_score}"]})
     rows.append({"cells": [f"open_loops: {'yes' if c.has_open_loops else 'no'}"]})
     if c.manual_tags:
         rows.append({"cells": [f"tags (manual): {', '.join(c.manual_tags)}"]})
     if c.auto_tags:
         rows.append({"cells": [f"tags (auto):   {', '.join(c.auto_tags)}"]})
-    if c.primary_project_id:
-        rows.append({"cells": [f"primary_project: {c.primary_project_id}"]})
     rows.append({"cells": [""]})
     rows.append({"cells": ["--- summary ---"]})
     summary = c.summary_short or "(none)"
@@ -342,16 +340,28 @@ def build_conversation_detail(vault: Vault, store: Store, conversation_id: str) 
             label = g["llm_label"] or g["keyword_label"] or "(unlabeled)"
             rows.append({"cells": [f"  [{g['level']}] {label}"]})
         rows.append({"cells": [""]})
-    rows.append({"cells": ["--- chunks ---"]})
-    if not chunks:
-        rows.append({"cells": ["  (none)"]})
-    for ch in chunks:
-        rows.append({"cells": [f"  #{ch.chunk_index} [{ch.start_message_ordinal}-{ch.end_message_ordinal}] {_trunc(ch.chunk_title, 80)}"]})
+
+    # Full message thread — the main content.
+    rows.append({"cells": [f"--- messages ({len(msgs)}) ---"]})
+    rows.append({"cells": [""]})
+    for m in msgs:
+        role = (m.role or "?").upper()
+        ts = _iso(m.timestamp) if m.timestamp else ""
+        header = f"[{role}]  {ts}"
+        rows.append({"cells": [header], "state": "state_indexed" if m.role == "user" else None})
+        text = (m.content_text or "").strip()
+        if text:
+            for line in _wrap(text, 100):
+                rows.append({"cells": [f"  {line}"]})
+        else:
+            rows.append({"cells": ["  (empty)"]})
+        rows.append({"cells": [""]})
+
     return ScreenModel(
-        title=f"Conversation {conversation_id}",
-        columns=["field"],
+        title=f"{_trunc(c.title, 50)}",
+        columns=[""],
         rows=rows,
-        footer="Esc / Backspace: back",
+        footer="Esc: back  |  j/k: scroll  |  PgUp/PgDn: page",
     )
 
 
