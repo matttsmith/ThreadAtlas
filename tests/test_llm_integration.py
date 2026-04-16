@@ -31,7 +31,7 @@ def _config(vault, mode, *, used_for):
         "max_response_chars": 4000,
         "used_for": list(used_for),
     }), encoding="utf-8")
-    return LLMRunner(vault, load_config(vault.root))
+    return LLMRunner(vault, load_config(vault.root), use_cache=False)
 
 
 def _one_conversation(tmp_vault, store, chatgpt_export_factory):

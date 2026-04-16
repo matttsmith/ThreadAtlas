@@ -70,7 +70,7 @@ def _runner(tmp_vault, mode, used_for=("summaries",)):
         "max_response_chars": 2000,
         "used_for": list(used_for),
     }), encoding="utf-8")
-    return LLMRunner(tmp_vault, load_config(tmp_vault.root))
+    return LLMRunner(tmp_vault, load_config(tmp_vault.root), use_cache=False)
 
 
 def test_summarize_resumable_skips_already_summarized(tmp_vault, store, chatgpt_export_factory):
