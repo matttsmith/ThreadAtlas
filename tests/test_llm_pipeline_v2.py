@@ -35,6 +35,7 @@ from threadatlas.llm.pipeline import (
     ExtractionResult,
     _content_hash,
     _heuristic_register,
+    _sample_messages,
     classify_turns,
     extract_conversation,
     run_pipeline,
@@ -376,6 +377,62 @@ class TestFullPipeline:
 
 
 # --- Heuristic pre-classification tests ---
+
+class TestMessageSampling:
+
+    def _make_messages(self, n: int) -> list[Message]:
+        """Create n alternating user/assistant messages."""
+        msgs = []
+        for i in range(n):
+            role = "user" if i % 2 == 0 else "assistant"
+            msgs.append(Message(
+                message_id=f"msg-{i}",
+                conversation_id="c1",
+                ordinal=i,
+                role=role,
+                content_text=f"Message {i} from {role} about topic {i // 10}",
+            ))
+        return msgs
+
+    def test_short_conversation_returns_all(self):
+        msgs = self._make_messages(6)
+        sampled = _sample_messages(msgs)
+        user_assistant = [m for m in msgs if m.role in ("user", "assistant")]
+        assert len(sampled) == len(user_assistant)
+
+    def test_long_conversation_is_sampled(self):
+        msgs = self._make_messages(60)
+        sampled = _sample_messages(msgs)
+        all_msgs = [m for m in msgs if m.role in ("user", "assistant")]
+        assert len(sampled) < len(all_msgs)
+        assert len(sampled) <= 12  # max_sampled default
+
+    def test_first_messages_always_included(self):
+        msgs = self._make_messages(60)
+        sampled = _sample_messages(msgs)
+        sampled_ids = {m.message_id for m in sampled}
+        # First user message (ordinal 0) should be included.
+        assert "msg-0" in sampled_ids
+
+    def test_last_user_message_always_included(self):
+        msgs = self._make_messages(60)
+        sampled = _sample_messages(msgs)
+        sampled_ids = {m.message_id for m in sampled}
+        # Last user message.
+        last_user = [m for m in msgs if m.role == "user"][-1]
+        assert last_user.message_id in sampled_ids
+
+    def test_sampling_preserves_order(self):
+        msgs = self._make_messages(60)
+        sampled = _sample_messages(msgs)
+        ordinals = [m.ordinal for m in sampled]
+        assert ordinals == sorted(ordinals)
+
+    def test_very_long_conversation_stays_bounded(self):
+        msgs = self._make_messages(200)
+        sampled = _sample_messages(msgs)
+        assert len(sampled) <= 14  # max_sampled + some assistant replies
+
 
 class TestHeuristicClassification:
 

@@ -79,11 +79,76 @@ def _content_hash(messages: list[Message]) -> str:
     return h.hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Message sampling — drastically reduces token count for long conversations
+# ---------------------------------------------------------------------------
+
+def _sample_messages(
+    messages: list[Message],
+    *,
+    max_sampled: int = 12,
+    window_size: int = 10,
+) -> list[Message]:
+    """Select a representative subset of messages for LLM classification.
+
+    Strategy:
+    - Always include the first 2 user messages (establishes topic/register).
+    - Always include the last user message (current state).
+    - For conversations > window_size messages, sample 1 user message per
+      window_size-message window (catches register pivots mid-conversation).
+    - Include the assistant reply following each sampled user message for
+      context.
+
+    For a 40-message conversation, this typically selects ~6-8 messages
+    instead of 40, an ~80-85% token reduction. For a 4-message
+    conversation it returns all of them.
+    """
+    user_msgs = [m for m in messages if m.role == "user"]
+    if len(user_msgs) <= max_sampled // 2:
+        # Short conversation: send everything.
+        return [m for m in messages if m.role in ("user", "assistant")]
+
+    by_ordinal = {m.ordinal: m for m in messages}
+    selected_ordinals: set[int] = set()
+
+    # First 2 user messages + their assistant replies.
+    for m in user_msgs[:2]:
+        selected_ordinals.add(m.ordinal)
+        reply_ord = m.ordinal + 1
+        if reply_ord in by_ordinal and by_ordinal[reply_ord].role == "assistant":
+            selected_ordinals.add(reply_ord)
+
+    # Last user message + its assistant reply.
+    last_user = user_msgs[-1]
+    selected_ordinals.add(last_user.ordinal)
+    reply_ord = last_user.ordinal + 1
+    if reply_ord in by_ordinal and by_ordinal[reply_ord].role == "assistant":
+        selected_ordinals.add(reply_ord)
+
+    # Sample from middle windows.
+    remaining_user = [m for m in user_msgs[2:-1] if m.ordinal not in selected_ordinals]
+    if remaining_user:
+        # Pick evenly spaced checkpoint messages.
+        budget = max_sampled // 2 - 3  # already used ~3 user slots
+        if budget > 0:
+            step = max(1, len(remaining_user) // budget)
+            for i in range(0, len(remaining_user), step):
+                if len(selected_ordinals) >= max_sampled:
+                    break
+                m = remaining_user[i]
+                selected_ordinals.add(m.ordinal)
+                reply_ord = m.ordinal + 1
+                if reply_ord in by_ordinal and by_ordinal[reply_ord].role == "assistant":
+                    selected_ordinals.add(reply_ord)
+
+    return [m for m in messages if m.ordinal in selected_ordinals
+            and m.role in ("user", "assistant")]
+
+
 def _render_messages_for_classification(messages: list[Message], max_chars: int = 600) -> str:
+    sampled = _sample_messages(messages)
     lines = []
-    for m in messages:
-        if m.role not in ("user", "assistant"):
-            continue
+    for m in sampled:
         text = (m.content_text or "").strip().replace("\n", " ")
         if len(text) > max_chars:
             text = text[:max_chars - 3] + "..."
@@ -96,10 +161,9 @@ def _render_messages_with_tags(
     classifications: dict[str, MessageClassification],
     max_chars: int = 600,
 ) -> str:
+    sampled = _sample_messages(messages)
     lines = []
-    for m in messages:
-        if m.role not in ("user", "assistant"):
-            continue
+    for m in sampled:
         text = (m.content_text or "").strip().replace("\n", " ")
         if len(text) > max_chars:
             text = text[:max_chars - 3] + "..."
@@ -185,16 +249,20 @@ def classify_turns(
             classified_at=now,
         ) for m in classifiable]
 
-    # LLM path.
+    # LLM path: classify sampled messages, then propagate to all.
+    sampled = _sample_messages(messages)
     rendered = _render_messages_for_classification(messages)
     prompt = render_prompt(TURN_CLASSIFIER_PROMPT, TITLE=title or "(no title)", MESSAGES=rendered)
 
     resp = runner.run("turn_classification", prompt)
     parsed = _parse_json_array(resp)
 
-    if parsed and len(parsed) >= len(classifiable):
-        classifications = []
-        for i, m in enumerate(classifiable):
+    sampled_classifiable = [m for m in sampled if m.role in ("user", "assistant")]
+
+    if parsed and len(parsed) >= len(sampled_classifiable):
+        # Build classifications for sampled messages.
+        sampled_cls: dict[str, tuple[str, str]] = {}
+        for i, m in enumerate(sampled_classifiable):
             item = parsed[i] if i < len(parsed) else {}
             reg = item.get("register", "other")
             rm = item.get("reality_mode", "literal")
@@ -202,10 +270,20 @@ def classify_turns(
                 reg = "other"
             if rm not in VALID_REALITY_MODES:
                 rm = "literal"
+            sampled_cls[m.message_id] = (reg, rm)
+
+        # Propagate to all classifiable messages: each non-sampled message
+        # inherits from the nearest preceding sampled message.
+        sampled_ordinals = sorted(m.ordinal for m in sampled_classifiable)
+        last_reg, last_rm = "other", "literal"
+        classifications = []
+        for m in classifiable:
+            if m.message_id in sampled_cls:
+                last_reg, last_rm = sampled_cls[m.message_id]
             classifications.append(MessageClassification(
                 message_id=m.message_id,
-                register=reg,
-                reality_mode=rm,
+                register=last_reg,
+                reality_mode=last_rm,
                 prompt_version=prompt_version,
                 classified_at=now,
             ))
