@@ -47,10 +47,6 @@ _PROJECT_RX = re.compile(
     r"\b(?i:project|initiative|workstream)\s+([A-Z][\w&\-/]{1,40}(?:\s+[A-Z][\w&\-/]{1,40}){0,3})\b",
 )
 
-# A single-token acronym in ALL CAPS that recurs across messages is a likely
-# project/code-name. We harvest then filter by recurrence.
-_ACRONYM_RX = re.compile(r"\b([A-Z]{2,6}(?:-?[A-Z0-9]{0,4})?)\b")
-
 # People/orgs: conservative proper-noun bigram match. We deliberately keep
 # this conservative and bias towards under-merging.
 _NAMED_ENTITY_RX = re.compile(
@@ -165,7 +161,12 @@ def _find_chunk_for_message(chunks: list[Chunk], ordinal: int) -> Chunk | None:
 
 
 def _harvest_decisions(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
-    """Collect decisions.
+    """Collect decisions from user messages only.
+
+    Only user-authored content is harvested. Assistant messages are
+    excluded because they frequently contain "I will ..." and "we
+    decided to ..." phrasing that reflects the AI's roleplay or
+    hypothetical suggestions, not genuine user commitments.
 
     Overlapping patterns on the same sentence are deduplicated by canonical
     key so a single phrasing does not spawn multiple "decision" objects.
@@ -173,7 +174,7 @@ def _harvest_decisions(messages: list[Message], chunks: list[Chunk]) -> list[_Hi
     hits: list[_Hit] = []
     seen_keys: set[str] = set()
     for m in messages:
-        if m.role not in {"user", "assistant"}:
+        if m.role != "user":
             continue
         for rx in _DECISION_PATTERNS:
             for match in rx.finditer(m.content_text or ""):
@@ -195,10 +196,15 @@ def _harvest_decisions(messages: list[Message], chunks: list[Chunk]) -> list[_Hi
 
 
 def _harvest_open_loops(messages: list[Message], chunks: list[Chunk]) -> list[_Hit]:
+    """Collect open loops from user messages only.
+
+    Assistant "TODO" and "I need to" phrasing is excluded — it reflects
+    the AI's framing, not the user's genuine pending work.
+    """
     hits: list[_Hit] = []
     seen_keys: set[str] = set()
     for m in messages:
-        if m.role not in {"user", "assistant"}:
+        if m.role != "user":
             continue
         for rx in _OPEN_LOOP_PATTERNS:
             for match in rx.finditer(m.content_text or ""):
@@ -267,11 +273,18 @@ def _harvest_artifacts(messages: list[Message], chunks: list[Chunk]) -> list[_Hi
 def _harvest_projects(
     conv: Conversation, messages: list[Message], chunks: list[Chunk]
 ) -> list[_Hit]:
-    """Project candidates come from explicit "project X" or recurring acronyms."""
+    """Project candidates come from explicit "project X" phrases only.
+
+    Recurring acronyms (RSA, LOAN, DAN, etc.) are deliberately NOT
+    harvested as projects — they produce far too many false positives in
+    real AI chat prose. The LLM pipeline handles project detection for
+    conversations that don't use explicit "project X" phrasing.
+    """
     hits: list[_Hit] = []
     seen: set[str] = set()
-    # Explicit "project X" mentions are high-confidence.
     for m in messages:
+        if m.role != "user":
+            continue
         for match in _PROJECT_RX.finditer(m.content_text or ""):
             label = match.group(1).strip()
             key = _canon_key(label)
@@ -287,33 +300,6 @@ def _harvest_projects(
                 chunk_id=ch.chunk_id if ch else None,
                 canonical_key=key,
             ))
-    # Recurring acronyms (>= 3 occurrences) become project candidates if not
-    # already an explicit project.
-    counts: Counter[str] = Counter()
-    first_seen: dict[str, Message] = {}
-    for m in messages:
-        for match in _ACRONYM_RX.finditer(m.content_text or ""):
-            tok = match.group(1)
-            counts[tok] += 1
-            first_seen.setdefault(tok, m)
-    for tok, n in counts.items():
-        key = _canon_key(tok)
-        if n < 3 or key in seen:
-            continue
-        # Skip very generic acronyms.
-        if tok in {"OK", "HTTP", "JSON", "API", "URL", "AI", "LLM", "PDF", "CSV", "XLSX", "TODO", "FAQ", "UI", "UX", "CTO", "CEO", "CFO", "USA", "EU", "UK"}:
-            continue
-        seen.add(key)
-        m = first_seen[tok]
-        ch = _find_chunk_for_message(chunks, m.ordinal)
-        hits.append(_Hit(
-            kind=DerivedKind.PROJECT.value,
-            title=tok,
-            description=f"Recurring acronym '{tok}' ({n}x) in '{conv.title}'",
-            excerpt=_excerpt(m.content_text, tok),
-            chunk_id=ch.chunk_id if ch else None,
-            canonical_key=key,
-        ))
     return hits
 
 

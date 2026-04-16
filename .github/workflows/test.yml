@@ -15,7 +15,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  full-test-suite:
+    name: "Tests (Python ${{ matrix.python }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,9 +42,10 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
 
-  no-network-static-check:
+  no-network-guard:
     # Isolates the privacy invariant: even if the full suite regresses, this
     # lightweight job flags any new networking import in the runtime package.
+    name: "No-network import guard"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
